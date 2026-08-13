@@ -87,6 +87,13 @@ always on top but uses the Windows `NOACTIVATE` and click-through styles, so it
 cannot take keyboard focus from RoboMaster or intercept mouse input. It uses a
 separate LeapC client and does not send robot commands.
 
+The view labels the four translation axes directly: hand away from you is robot
+forward, hand toward you is robot back, and hand left/right is robot left/right.
+When the gesture controller is running, the line below the skeleton reports the
+derived command as `FORWARD`, `BACK`, `LEFT`, `RIGHT`, or a diagonal combination.
+It also distinguishes `DRY RUN` from live `ROBOT` output and changes to `STOP`
+immediately when the controller disarms.
+
 Stop the overlay with:
 
     .\run_leap_visualizer.ps1 -Stop
