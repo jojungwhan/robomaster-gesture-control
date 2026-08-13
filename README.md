@@ -113,6 +113,9 @@ audio stays on this PC and no cloud API key is needed. Movement requires the
 wake word `robot` by default, while `stop`, `halt`, `freeze`, and `emergency
 stop` are accepted without it. Each accepted movement is a short pulse (0.60
 seconds by default) and then stops automatically.
+In live mode, microphone or WAV recognition starts only after the robot
+connection and independent stale-command watchdog are active, so speech cannot
+queue while the controller is still connecting.
 
 Test the default PC microphone without contacting the robot:
 
