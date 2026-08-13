@@ -1007,6 +1007,14 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--frame-interval", type=float, default=0.08)
     parser.add_argument("--duration", type=float, default=0.0)
+    parser.add_argument(
+        "--camera-check",
+        action="store_true",
+        help=(
+            "verify a changing robot-mounted camera stream and exit without "
+            "loading YOLO or enabling motion"
+        ),
+    )
     parser.add_argument("--no-preview", action="store_true")
     parser.add_argument(
         "--speak",
@@ -1047,6 +1055,14 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def _validate_args(args) -> FollowConfig:
+    if args.camera_check and args.live:
+        raise ValueError("--camera-check cannot be combined with --live")
+    if args.camera_check and args.source not in ("robomaster-app", "sdk"):
+        raise ValueError(
+            "--camera-check requires --source robomaster-app or --source sdk"
+        )
+    if args.camera_check and args.speak:
+        raise ValueError("--camera-check cannot be combined with --speak")
     if args.source == "file" and args.input_file is None:
         raise ValueError("--source file requires --input-file")
     if args.input_file is not None and not args.input_file.is_file():
@@ -1143,8 +1159,71 @@ def _make_frame_source(args, motion_adapter):
     return DjiSdkFrameSource(camera_adapter), camera_adapter
 
 
+def _run_camera_check(args) -> int:
+    frame_source = None
+    camera_adapter = None
+    freshness_guard = CameraFreshnessGuard()
+    timeout_s = args.duration if args.duration > 0.0 else 8.0
+    deadline_s = time.monotonic() + timeout_s
+    last_result = CameraFreshness(False, "waiting for first camera frame")
+
+    try:
+        if args.source == "robomaster-app":
+            frame_source = RoboMasterAppFrameSource(args.window_title)
+        else:
+            camera_adapter = DjiRobotAdapter(
+                conn_type=args.connection,
+                proto_type=args.protocol,
+                robot_ip=args.robot_ip,
+                local_ip=args.local_ip,
+                serial_number=args.serial_number,
+            )
+            camera_adapter.connect()
+            frame_source = DjiSdkFrameSource(camera_adapter)
+        frame_source.open()
+        print(
+            "CAMERA CHECK: verifying a changing {} stream for up to {:.1f}s. "
+            "YOLO, narration, and robot motion are disabled.".format(
+                args.source,
+                timeout_s,
+            ),
+            flush=True,
+        )
+        while time.monotonic() < deadline_s:
+            frame = frame_source.read()
+            if frame is None:
+                raise RuntimeError("Camera preflight failed: frame unavailable")
+            last_result = freshness_guard.update(frame)
+            if last_result.fresh:
+                print(
+                    "Camera preflight passed: changing robot-camera stream "
+                    "verified over {} consecutive frames. No model or movement "
+                    "controller was started.".format(
+                        last_result.confirmation_frames,
+                    ),
+                    flush=True,
+                )
+                return 0
+            remaining = args.frame_interval
+            if remaining > 0.0:
+                time.sleep(remaining)
+        raise RuntimeError(
+            "Camera preflight failed after {:.1f}s: {}".format(
+                timeout_s,
+                last_result.reason,
+            )
+        )
+    finally:
+        if frame_source is not None:
+            frame_source.close()
+        if camera_adapter is not None:
+            camera_adapter.close()
+
+
 def run(args) -> int:
     config = _validate_args(args)
+    if args.camera_check:
+        return _run_camera_check(args)
     follower = TargetFollower(config)
     inference_confidence = min(args.confidence, args.person_stop_confidence)
     if args.speak:

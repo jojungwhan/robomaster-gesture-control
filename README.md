@@ -131,7 +131,11 @@ List the installed offline recognizers with:
     .\run_voice_control.ps1 -ListRecognizers
 
 When dry-run recognition is correct, connect the S1 in its foreground live-drive
-view and explicitly enable movement:
+view and verify input access without starting the microphone or movement:
+
+    .\run_voice_control.ps1 -Live -ConnectOnly -Transport s1-app
+
+Then explicitly enable voice movement:
 
     .\run_voice_control.ps1 -Live -Transport s1-app
 
@@ -148,7 +152,12 @@ Install the optional pinned computer-vision runtime once:
 YOLO mode detects and tracks one named model class, draws boxes, track IDs,
 state, FPS, and the intended robot direction, and remains a dry run unless
 `-Live` is supplied. For a stock S1, first connect its camera in the RoboMaster
-live-drive view, then test detection without motion:
+live-drive view. Move an object in front of the camera and verify that the
+stream is genuinely changing without loading YOLO or enabling motion:
+
+    .\run_yolo_follow.ps1 -CameraCheck -Source robomaster-app
+
+Then test detection without motion:
 
     .\run_yolo_follow.ps1 -Target bottle
 

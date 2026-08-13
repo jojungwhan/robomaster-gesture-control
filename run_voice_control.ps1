@@ -1,5 +1,6 @@
 param(
     [switch]$Live,
+    [switch]$ConnectOnly,
     [ValidateSet('sdk', 's1-app')]
     [string]$Transport = 's1-app',
     [ValidateSet('ap', 'sta', 'rndis')]
@@ -40,6 +41,7 @@ $arguments = @(
     '--yaw-speed', $YawSpeed
 )
 if ($Live) { $arguments += '--live' }
+if ($ConnectOnly) { $arguments += '--connect-only' }
 if ($ListRecognizers) { $arguments += '--list-recognizers' }
 if ($NoWakeWord) { $arguments += '--no-wake-word' }
 if ($AudioFile) { $arguments += @('--audio-file', $AudioFile) }

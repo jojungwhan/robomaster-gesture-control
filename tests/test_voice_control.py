@@ -7,10 +7,85 @@ from robomaster_gesture.voice_control import (
     build_parser,
     parse_voice_command,
     run,
+    _validate_args,
 )
 
 
 class VoiceCommandTests(unittest.TestCase):
+    def test_connect_only_requires_live_and_rejects_audio(self):
+        parser = build_parser()
+        with self.assertRaises(ValueError):
+            _validate_args(parser.parse_args(("--connect-only",)))
+        with self.assertRaises(ValueError):
+            _validate_args(
+                parser.parse_args(
+                    (
+                        "--live",
+                        "--connect-only",
+                        "--audio-file",
+                        str(__file__),
+                    )
+                )
+            )
+
+    def test_connect_only_never_starts_recognizer_or_command_pump(self):
+        events = []
+
+        class FakeRobot:
+            connected_ip = None
+
+            def connect(self):
+                events.append("connect")
+
+            def stop(self):
+                events.append("stop")
+
+            def close(self):
+                events.append("close")
+
+        class FakeLease:
+            def acquire(self):
+                events.append("lease")
+
+            def close(self):
+                events.append("lease-close")
+
+        def forbidden(*args, **kwargs):
+            raise AssertionError("voice machinery must not start during preflight")
+
+        args = build_parser().parse_args(("--live", "--connect-only"))
+        with ExitStack() as stack:
+            stack.enter_context(
+                mock.patch(
+                    "robomaster_gesture.voice_control._make_robot",
+                    return_value=FakeRobot(),
+                )
+            )
+            stack.enter_context(
+                mock.patch(
+                    "robomaster_gesture.voice_control.ControllerLease",
+                    FakeLease,
+                )
+            )
+            stack.enter_context(
+                mock.patch(
+                    "robomaster_gesture.voice_control.WindowsSpeechRecognizer",
+                    forbidden,
+                )
+            )
+            stack.enter_context(
+                mock.patch(
+                    "robomaster_gesture.voice_control.CommandPump",
+                    forbidden,
+                )
+            )
+            self.assertEqual(0, run(args))
+
+        self.assertEqual(
+            ["lease", "connect", "stop", "close", "lease-close"],
+            events,
+        )
+
     def test_recognizer_starts_only_after_robot_and_watchdog(self):
         events = []
 
