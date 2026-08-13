@@ -170,6 +170,11 @@ For an EP/EP Core with SDK camera access:
 
     .\run_yolo_follow.ps1 -Live -Transport sdk -Source sdk -Target bottle
 
+For SDK STA discovery, close the RoboMaster desktop app first because both use
+UDP port 45678. Alternatively, pass the robot's current address with
+`-RobotIp`; this skips broadcast discovery. The stock-S1 app-camera workflow
+above does not use the SDK and should keep the desktop app open.
+
 Live mode permits only the robot-mounted camera source and refuses to follow a
 person. It requires three consecutive target frames before movement; target
 loss, a changed track ID, stale inference, a frozen camera frame, camera loss,
