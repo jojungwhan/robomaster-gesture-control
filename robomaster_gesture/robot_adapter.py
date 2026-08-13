@@ -73,6 +73,13 @@ class DjiRobotAdapter(RobotAdapter):
         except Exception:
             return None
 
+    @property
+    def camera(self):
+        """Return the SDK camera after connection for vision-only consumers."""
+        if self._robot is None:
+            raise RobotError("RoboMaster is not connected.")
+        return self._robot.camera
+
     def connect(self) -> None:
         try:
             from robomaster import config, robot
