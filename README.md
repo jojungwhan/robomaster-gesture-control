@@ -170,6 +170,30 @@ The default `yolo11n.pt` weights download on first use and are not committed.
 Ultralytics code and pretrained models use AGPL-3.0 by default; review
 `THIRD_PARTY_NOTICES.md` and Ultralytics licensing before deployment.
 
+### Natural English scene speech
+
+Install the optional local Piper neural voice once (Python 3.9 or newer is
+required for Piper; the script creates a separate environment):
+
+    .\setup_scene_speech.ps1 -TestVoice
+
+Then add `-Speak` to a YOLO run:
+
+    .\run_yolo_follow.ps1 -Speak -Target bottle
+
+The detector describes all recognized model classes, not only the follow
+target, using counts and positions such as `I see a bus ahead and two people on
+the left.` A scene must remain stable for three frames before it is announced;
+unchanged scenes are repeated no more than once every 12 seconds. Speech runs
+in a persistent replace-latest worker, so synthesis and playback never block
+camera inference or the robot's motion watchdog.
+
+With the stock S1 app transport, speech comes from the PC's default audio
+output because that transport exposes only W/A/S/D movement. The selected
+`en_US-john-medium` voice is a local Piper neural voice trained from
+public-domain LibriVox recordings. No microphone audio, camera frame, or scene
+description is sent to a cloud service.
+
 The app and controller must run at the same Windows privilege level. Normally both can run without elevation. If the DJI app was launched as administrator, either restart it normally or launch the controller from an administrator PowerShell.
 
 For AP mode:
@@ -192,3 +216,5 @@ Before live control, put the robot on a clear floor or raise the wheels, keep th
 - DJI S1 keyboard controls (user manual): https://dl.djicdn.com/downloads/robomaster-s1/20200324/RoboMaster_S1_User_Manual_v1.8_EN.pdf
 - Microsoft offline WAV speech input: https://learn.microsoft.com/en-us/dotnet/api/system.speech.recognition.speechrecognitionengine.setinputtowavefile
 - Ultralytics multi-object tracking: https://docs.ultralytics.com/modes/track
+- Piper local neural speech: https://github.com/OHF-Voice/piper1-gpl
+- Piper `en_US-john-medium` voice card: https://huggingface.co/rhasspy/piper-voices/blob/main/en/en_US/john/medium/MODEL_CARD
