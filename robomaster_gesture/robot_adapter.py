@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import os
+import socket
 import threading
 import time
 from typing import Optional, Set
@@ -11,6 +12,106 @@ from .models import VelocityCommand
 
 class RobotError(RuntimeError):
     pass
+
+
+def _canonical_dji_connection_options(conn_module, conn_type, proto_type):
+    """Return the SDK's own option objects, not merely equal strings.
+
+    DJI RoboMaster SDK 0.1.1.68 compares connection modes with ``is`` in
+    ``SdkConnection.request_connection``.  Strings produced by argparse are
+    equal to the SDK constants but are not guaranteed to be the same objects,
+    which can skip every mode branch and leave ``proxy_addr`` uninitialized.
+    """
+    connection_options = {
+        "ap": conn_module.CONNECTION_WIFI_AP,
+        "sta": conn_module.CONNECTION_WIFI_STA,
+        "rndis": conn_module.CONNECTION_USB_RNDIS,
+    }
+    protocol_options = {
+        "tcp": conn_module.CONNECTION_PROTO_TCP,
+        "udp": conn_module.CONNECTION_PROTO_UDP,
+    }
+    try:
+        canonical_connection = connection_options[str(conn_type).casefold()]
+    except KeyError as exc:
+        raise RobotError(
+            "Unsupported RoboMaster SDK connection type: {!r}".format(conn_type)
+        ) from exc
+    try:
+        canonical_protocol = protocol_options[str(proto_type).casefold()]
+    except KeyError as exc:
+        raise RobotError(
+            "Unsupported RoboMaster SDK protocol type: {!r}".format(proto_type)
+        ) from exc
+    return canonical_connection, canonical_protocol
+
+
+def _discover_dji_sta_robot(
+    config_module,
+    serial_number=None,
+    socket_module=socket,
+    timeout_s: float = 3.0,
+):
+    """Discover a STA robot before DJI can enter its broken fallback client.
+
+    RoboMaster SDK 0.1.1.68 catches discovery failures, returns ``None``, and
+    then attempts to construct a default client through additional defective
+    code.  Listen directly on the same UDP port so binding and discovery are
+    one atomic operation, then pass the discovered address into the SDK.
+    """
+    discovery_port = (
+        int(config_module.ROBOT_BROADCAST_PORT)
+        if serial_number
+        else 45678
+    )
+    listener = socket_module.socket(socket_module.AF_INET, socket_module.SOCK_DGRAM)
+    try:
+        listener.bind(("0.0.0.0", discovery_port))
+    except OSError as exc:
+        listener.close()
+        raise RobotError(
+            "RoboMaster STA discovery port {} is already in use. The desktop "
+            "RoboMaster app commonly owns this port; close it before SDK "
+            "discovery, or supply --robot-ip with the known robot address.".format(
+                discovery_port
+            )
+        ) from exc
+
+    deadline_s = time.monotonic() + max(0.01, float(timeout_s))
+    try:
+        while True:
+            remaining_s = deadline_s - time.monotonic()
+            if remaining_s <= 0.0:
+                break
+            listener.settimeout(remaining_s)
+            try:
+                data, address = listener.recvfrom(1024)
+            except (socket.timeout, TimeoutError):
+                break
+            if serial_number:
+                received_serial = data.split(b"\x00", 1)[0].decode(
+                    "utf-8",
+                    errors="replace",
+                )
+                if received_serial != serial_number:
+                    continue
+            if not address or not address[0]:
+                continue
+            return str(address[0])
+    except OSError as exc:
+        raise RobotError(
+            "RoboMaster STA discovery failed while receiving broadcasts: {}".format(
+                exc
+            )
+        ) from exc
+    finally:
+        listener.close()
+
+    raise RobotError(
+        "No RoboMaster STA broadcast was received. Confirm the robot is "
+        "powered on, connected to this LAN, and in SDK mode, or supply "
+        "--robot-ip with its known address."
+    )
 
 
 class RobotAdapter:
@@ -82,22 +183,31 @@ class DjiRobotAdapter(RobotAdapter):
 
     def connect(self) -> None:
         try:
-            from robomaster import config, robot
+            from robomaster import config, conn, robot
         except ImportError as exc:
             raise RobotError(
                 "DJI RoboMaster SDK is not installed in this Python environment."
             ) from exc
 
-        if self.local_ip:
-            config.LOCAL_IP_STR = self.local_ip
-        if self.robot_ip:
+        sdk_conn_type, sdk_proto_type = _canonical_dji_connection_options(
+            conn,
+            self.conn_type,
+            self.proto_type,
+        )
+        config.LOCAL_IP_STR = self.local_ip
+        if sdk_conn_type is conn.CONNECTION_WIFI_STA:
+            config.ROBOT_IP_STR = self.robot_ip or _discover_dji_sta_robot(
+                config,
+                serial_number=self.serial_number,
+            )
+        else:
             config.ROBOT_IP_STR = self.robot_ip
 
         self._robot = robot.Robot()
         try:
             initialized = self._robot.initialize(
-                conn_type=self.conn_type,
-                proto_type=self.proto_type,
+                conn_type=sdk_conn_type,
+                proto_type=sdk_proto_type,
                 sn=self.serial_number,
             )
         except Exception as exc:
