@@ -106,6 +106,70 @@ The implementation is adapted from Ultraleap's Apache-2.0 licensed
 [`leapc-python-bindings` visualizer](https://github.com/ultraleap/leapc-python-bindings/blob/main/examples/visualiser.py).
 See `THIRD_PARTY_NOTICES.md` for attribution.
 
+## Offline voice control
+
+Voice commands use the installed Windows `System.Speech` recognizer, so live
+audio stays on this PC and no cloud API key is needed. Movement requires the
+wake word `robot` by default, while `stop`, `halt`, `freeze`, and `emergency
+stop` are accepted without it. Each accepted movement is a short pulse (0.60
+seconds by default) and then stops automatically.
+
+Test the default PC microphone without contacting the robot:
+
+    .\run_voice_control.ps1 -Duration 20
+
+Say `robot forward`, `robot back`, `robot left`, `robot right`, or a diagonal
+such as `robot forward left`. Test a recorded command from a PCM WAV file with:
+
+    .\run_voice_control.ps1 -AudioFile .\command.wav
+
+List the installed offline recognizers with:
+
+    .\run_voice_control.ps1 -ListRecognizers
+
+When dry-run recognition is correct, connect the S1 in its foreground live-drive
+view and explicitly enable movement:
+
+    .\run_voice_control.ps1 -Live -Transport s1-app
+
+For an EP/EP Core using the DJI SDK, use `-Transport sdk`. SDK voice mode also
+supports `robot turn left/right`; the stock S1 app exposes only W/A/S/D, so a
+turn phrase stops instead of synthesizing unsupported input.
+
+## YOLO object following
+
+Install the optional pinned computer-vision runtime once:
+
+    .\setup_yolo.ps1
+
+YOLO mode detects and tracks one named model class, draws boxes, track IDs,
+state, FPS, and the intended robot direction, and remains a dry run unless
+`-Live` is supplied. For a stock S1, first connect its camera in the RoboMaster
+live-drive view, then test detection without motion:
+
+    .\run_yolo_follow.ps1 -Target bottle
+
+Once the preview reliably follows the intended object, put the robot on a clear
+floor and explicitly enable movement:
+
+    .\run_yolo_follow.ps1 -Live -Transport s1-app -Source robomaster-app -Target bottle
+
+For an EP/EP Core with SDK camera access:
+
+    .\run_yolo_follow.ps1 -Live -Transport sdk -Source sdk -Target bottle
+
+Live mode permits only the robot-mounted camera source and refuses to follow a
+person. It requires three consecutive target frames before movement; target
+loss, a changed track ID, stale inference, camera loss, app focus loss, or any
+person detected alongside a non-person target causes a stop. The robot strafes
+left/right until the target is centered, approaches it slowly, and stops when
+the target box reaches the configured size. A machine-local lease prevents
+gesture, voice, and YOLO live controllers from running simultaneously.
+
+The default `yolo11n.pt` weights download on first use and are not committed.
+Ultralytics code and pretrained models use AGPL-3.0 by default; review
+`THIRD_PARTY_NOTICES.md` and Ultralytics licensing before deployment.
+
 The app and controller must run at the same Windows privilege level. Normally both can run without elevation. If the DJI app was launched as administrator, either restart it normally or launch the controller from an administrator PowerShell.
 
 For AP mode:
@@ -126,3 +190,5 @@ Before live control, put the robot on a clear floor or raise the wheels, keep th
 - DJI RoboMaster SDK: https://github.com/dji-sdk/RoboMaster-SDK
 - DJI chassis control example: https://robomaster-dev.readthedocs.io/en/latest/python_sdk/beginner_ep.html
 - DJI S1 keyboard controls (user manual): https://dl.djicdn.com/downloads/robomaster-s1/20200324/RoboMaster_S1_User_Manual_v1.8_EN.pdf
+- Microsoft offline WAV speech input: https://learn.microsoft.com/en-us/dotnet/api/system.speech.recognition.speechrecognitionengine.setinputtowavefile
+- Ultralytics multi-object tracking: https://docs.ultralytics.com/modes/track

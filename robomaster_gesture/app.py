@@ -7,6 +7,7 @@ import threading
 import time
 from typing import Optional, Sequence
 
+from .control_lease import ControlLeaseError, ControllerLease
 from .control_status import DEFAULT_CONTROL_STATUS_PATH, ControlStatusPublisher
 from .gesture import GestureConfig, GestureController
 from .leap_source import LeapSource, LeapSourceError
@@ -210,6 +211,7 @@ def run(args: argparse.Namespace) -> int:
     source = None  # type: Optional[LeapSource]
     pump = None  # type: Optional[CommandPump]
     status_publisher = None  # type: Optional[ControlStatusPublisher]
+    controller_lease = None  # type: Optional[ControllerLease]
 
     if args.live:
         print(
@@ -231,6 +233,9 @@ def run(args: argparse.Namespace) -> int:
         )
 
     try:
+        if args.live:
+            controller_lease = ControllerLease()
+            controller_lease.acquire()
         if args.connect_only:
             robot.connect()
             robot.stop()
@@ -383,6 +388,8 @@ def run(args: argparse.Namespace) -> int:
         finally:
             if source is not None:
                 source.close()
+        if controller_lease is not None:
+            controller_lease.close()
 
     return 0
 
@@ -392,7 +399,7 @@ def main(argv: Sequence[str] = None) -> int:
     args = parser.parse_args(argv)
     try:
         return run(args)
-    except (ValueError, LeapSourceError, RobotError) as exc:
+    except (ValueError, ControlLeaseError, LeapSourceError, RobotError) as exc:
         print("ERROR: {}".format(exc), file=sys.stderr, flush=True)
         return 1
     except Exception as exc:
