@@ -3,6 +3,7 @@ import unittest
 from robomaster_gesture.scene_speech import (
     SceneNarrationPolicy,
     describe_scene,
+    merge_scene_detections,
 )
 from robomaster_gesture.yolo_follow import Detection
 
@@ -58,6 +59,36 @@ class SceneDescriptionTests(unittest.TestCase):
             "and 2 traffic lights on the right.",
             scene.text,
         )
+
+    def test_normalizes_furniture_names_and_plurals(self):
+        scene = describe_scene(
+            (
+                Detection("office chair", 0.9, (0, 0, 100, 100)),
+                Detection("office chair", 0.8, (110, 0, 200, 100)),
+                Detection("bookshelf", 0.9, (250, 0, 390, 200)),
+                Detection("dining table", 0.9, (520, 0, 620, 200)),
+            ),
+            frame_width=640,
+        )
+        self.assertEqual(
+            "I see a bookshelf ahead, 2 chairs on the left, and a table on the right.",
+            scene.text,
+        )
+
+    def test_expanded_desk_replaces_overlapping_primary_table(self):
+        primary = (Detection("dining table", 0.8, (100, 100, 500, 400)),)
+        expanded = (
+            Detection("desk", 0.7, (110, 110, 490, 390)),
+            Detection("office chair", 0.8, (10, 100, 90, 300)),
+        )
+        merged = merge_scene_detections(primary, expanded)
+        self.assertEqual(["desk", "office chair"], [item.label for item in merged])
+
+    def test_expanded_alias_does_not_duplicate_primary_chair(self):
+        primary = (Detection("chair", 0.8, (100, 100, 300, 400)),)
+        expanded = (Detection("office chair", 0.9, (105, 105, 295, 395)),)
+        merged = merge_scene_detections(primary, expanded)
+        self.assertEqual(primary, merged)
 
 
 class SceneNarrationPolicyTests(unittest.TestCase):

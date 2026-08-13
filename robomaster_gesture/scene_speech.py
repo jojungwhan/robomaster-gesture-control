@@ -13,10 +13,55 @@ import time
 from typing import Optional, Sequence, Tuple
 
 
+SCENE_LABEL_ALIASES = {
+    "armchair": "chair",
+    "bean bag chair": "chair",
+    "computer chair": "chair",
+    "folding chair": "chair",
+    "office chair": "chair",
+    "rocking chair": "chair",
+    "swivel chair": "chair",
+    "computer desk": "desk",
+    "information desk": "desk",
+    "office desk": "desk",
+    "writing desk": "desk",
+    "cocktail table": "table",
+    "dining table": "table",
+    "dinning table": "table",
+    "glass table": "table",
+    "kitchen table": "table",
+    "picnic table": "table",
+    "round table": "table",
+    "side table": "table",
+    "bookcase": "bookshelf",
+    "shelf": "bookshelf",
+    "bathroom cabinet": "cabinet",
+    "cabinetry": "cabinet",
+    "file cabinet": "cabinet",
+    "kitchen cabinet": "cabinet",
+    "side cabinet": "cabinet",
+    "tv cabinet": "cabinet",
+    "doorway": "door",
+    "glass door": "door",
+    "screen door": "door",
+    "glass window": "window",
+    "kitchen window": "window",
+    "office window": "window",
+    "computer monitor": "monitor",
+    "tv": "television",
+    "potted plant": "plant",
+}
+
+
 @dataclass(frozen=True)
 class SceneDescription:
     signature: Tuple[Tuple[str, str, int], ...]
     text: str
+
+
+def canonical_scene_label(label: str) -> str:
+    normalized = " ".join(str(label).strip().casefold().replace("_", " ").split())
+    return SCENE_LABEL_ALIASES.get(normalized, normalized)
 
 
 def _spoken_count(label: str, count: int) -> str:
@@ -30,7 +75,13 @@ def _spoken_count(label: str, count: int) -> str:
     if count == 1:
         article = "an" if label[:1].casefold() in "aeiou" else "a"
         return "{} {}".format(article, label)
-    irregular = {"person": "people", "sheep": "sheep", "knife": "knives"}
+    irregular = {
+        "person": "people",
+        "sheep": "sheep",
+        "knife": "knives",
+        "bookshelf": "bookshelves",
+        "mouse": "mice",
+    }
     words = label.split()
     plural = irregular.get(words[-1])
     if plural is None:
@@ -46,6 +97,65 @@ def _join_phrases(phrases) -> str:
     if len(phrases) == 2:
         return " and ".join(phrases)
     return ", ".join(phrases[:-1]) + ", and " + phrases[-1]
+
+
+def _box_iou(first, second) -> float:
+    left = max(float(first[0]), float(second[0]))
+    top = max(float(first[1]), float(second[1]))
+    right = min(float(first[2]), float(second[2]))
+    bottom = min(float(first[3]), float(second[3]))
+    intersection = max(0.0, right - left) * max(0.0, bottom - top)
+    if intersection <= 0.0:
+        return 0.0
+    first_area = max(0.0, float(first[2]) - float(first[0])) * max(
+        0.0, float(first[3]) - float(first[1])
+    )
+    second_area = max(0.0, float(second[2]) - float(second[0])) * max(
+        0.0, float(second[3]) - float(second[1])
+    )
+    union = first_area + second_area - intersection
+    return intersection / union if union > 0.0 else 0.0
+
+
+def merge_scene_detections(
+    primary: Sequence,
+    expanded: Sequence,
+    overlap_threshold: float = 0.45,
+) -> Tuple:
+    """Add narration-only detections while suppressing overlapping aliases."""
+    if not 0.0 <= overlap_threshold <= 1.0:
+        raise ValueError("overlap threshold must be between 0 and 1")
+    merged = list(primary)
+    specificity = {("desk", "table"), ("monitor", "television")}
+    for candidate in expanded:
+        candidate_label = canonical_scene_label(candidate.label)
+        overlaps = [
+            index
+            for index, existing in enumerate(merged)
+            if _box_iou(existing.box, candidate.box) >= overlap_threshold
+        ]
+        if any(
+            canonical_scene_label(merged[index].label) == candidate_label
+            for index in overlaps
+        ):
+            continue
+        broader = [
+            index
+            for index in overlaps
+            if (candidate_label, canonical_scene_label(merged[index].label))
+            in specificity
+        ]
+        if broader:
+            for index in reversed(broader):
+                del merged[index]
+        elif any(
+            (canonical_scene_label(merged[index].label), candidate_label)
+            in specificity
+            for index in overlaps
+        ):
+            continue
+        merged.append(candidate)
+    return tuple(merged)
 
 
 def describe_scene(
@@ -66,7 +176,7 @@ def describe_scene(
     for item in detections:
         if float(item.confidence) < confidence:
             continue
-        label = str(item.label).strip().casefold().replace("_", " ")
+        label = canonical_scene_label(item.label)
         if not label:
             continue
         center_x = float(item.center[0])

@@ -29,6 +29,11 @@ param(
     [double]$SpeechRepeatSeconds = 12.0,
     [double]$SpeechClearSeconds = 3.0,
     [int]$SpeechMaxGroups = 4,
+    [switch]$BasicSceneOnly,
+    [double]$ExpandedSceneConfidence = 0.35,
+    [int]$ExpandedSceneImageSize = 320,
+    [double]$ExpandedSceneInterval = 1.5,
+    [string]$ExpandedSceneModel,
     [string]$PiperPython,
     [string]$PiperModel,
     [double]$Duration = 0,
@@ -68,10 +73,15 @@ $arguments = @(
     '--speech-stable-frames', $SpeechStableFrames,
     '--speech-repeat-seconds', $SpeechRepeatSeconds,
     '--speech-clear-seconds', $SpeechClearSeconds,
-    '--speech-max-groups', $SpeechMaxGroups
+    '--speech-max-groups', $SpeechMaxGroups,
+    '--expanded-scene-confidence', $ExpandedSceneConfidence,
+    '--expanded-scene-image-size', $ExpandedSceneImageSize,
+    '--expanded-scene-interval', $ExpandedSceneInterval
 )
 if ($Live) { $arguments += '--live' }
 if ($Speak) { $arguments += '--speak' }
+if ($BasicSceneOnly) { $arguments += '--basic-scene-only' }
+if ($ExpandedSceneModel) { $arguments += @('--expanded-scene-model', $ExpandedSceneModel) }
 if ($PiperPython) { $arguments += @('--piper-python', $PiperPython) }
 if ($PiperModel) { $arguments += @('--piper-model', $PiperModel) }
 if ($InputFile) { $arguments += @('--input-file', $InputFile) }
