@@ -190,9 +190,11 @@ camera inference or the robot's motion watchdog.
 
 With the stock S1 app transport, speech comes from the PC's default audio
 output because that transport exposes only W/A/S/D movement. The selected
-`en_US-john-medium` voice is a local Piper neural voice trained from
-public-domain LibriVox recordings. No microphone audio, camera frame, or scene
-description is sent to a cloud service.
+`en_US-kristin-medium` voice is a local Piper neural voice with a natural US
+English female voice, trained from public-domain LibriVox recordings. No
+microphone audio, camera frame, or scene description is sent to a cloud
+service. Pass `-Voice <PiperVoiceName>` during setup and `-PiperModel <path>`
+while running if you want to use a different installed voice.
 
 The app and controller must run at the same Windows privilege level. Normally both can run without elevation. If the DJI app was launched as administrator, either restart it normally or launch the controller from an administrator PowerShell.
 
@@ -217,4 +219,4 @@ Before live control, put the robot on a clear floor or raise the wheels, keep th
 - Microsoft offline WAV speech input: https://learn.microsoft.com/en-us/dotnet/api/system.speech.recognition.speechrecognitionengine.setinputtowavefile
 - Ultralytics multi-object tracking: https://docs.ultralytics.com/modes/track
 - Piper local neural speech: https://github.com/OHF-Voice/piper1-gpl
-- Piper `en_US-john-medium` voice card: https://huggingface.co/rhasspy/piper-voices/blob/main/en/en_US/john/medium/MODEL_CARD
+- Piper `en_US-kristin-medium` voice card: https://huggingface.co/rhasspy/piper-voices/blob/main/en/en_US/kristin/medium/MODEL_CARD

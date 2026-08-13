@@ -30,8 +30,8 @@ Optional English scene narration launches the separately installed
 process. Piper 1.6.0 is licensed GPL-3.0-or-later. The package is installed into
 a sibling virtual environment and is not stored in this repository.
 
-The default `en_US-john-medium` voice is downloaded from the
+The default `en_US-kristin-medium` US English female voice is downloaded from the
 [`rhasspy/piper-voices`](https://huggingface.co/rhasspy/piper-voices) model
 repository and is not stored here. Its model card identifies its source as
 public-domain LibriVox recordings. Review the model card before redistribution:
-https://huggingface.co/rhasspy/piper-voices/blob/main/en/en_US/john/medium/MODEL_CARD.
+https://huggingface.co/rhasspy/piper-voices/blob/main/en/en_US/kristin/medium/MODEL_CARD.

@@ -1,6 +1,6 @@
 param(
     [string]$Python,
-    [string]$Voice = 'en_US-john-medium',
+    [string]$Voice = 'en_US-kristin-medium',
     [switch]$Recreate,
     [switch]$TestVoice
 )

@@ -32,7 +32,9 @@ from .scene_speech import (
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 WORKSPACE_PARENT = PROJECT_ROOT.parent
 DEFAULT_PIPER_PYTHON = WORKSPACE_PARENT / ".venv-piper" / "Scripts" / "python.exe"
-DEFAULT_PIPER_MODEL = WORKSPACE_PARENT / "piper-voices" / "en_US-john-medium.onnx"
+DEFAULT_PIPER_MODEL = (
+    WORKSPACE_PARENT / "piper-voices" / "en_US-kristin-medium.onnx"
+)
 DEFAULT_PIPER_WORKER = PROJECT_ROOT / "scripts" / "piper_scene_worker.py"
 
 
