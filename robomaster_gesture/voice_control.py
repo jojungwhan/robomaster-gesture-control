@@ -354,13 +354,12 @@ def run(args) -> int:
     current = VelocityCommand.stopped()
     motion_deadline_s = 0.0
     input_completed = False
-    start_s = time.monotonic()
+    start_s = None
 
     try:
         if args.live:
             controller_lease = ControllerLease()
             controller_lease.acquire()
-        recognizer.start()
         robot.connect()
         pump = CommandPump(
             robot,
@@ -372,6 +371,12 @@ def run(args) -> int:
             ),
         )
         pump.start()
+        # Do not accept or queue speech until the robot connection and the
+        # independent stale-command watchdog are both active.  This prevents a
+        # phrase spoken during a slow live connection from moving the robot
+        # later, after the operator's context may have changed.
+        recognizer.start()
+        start_s = time.monotonic()
         mode = "LIVE ROBOT" if args.live else "DRY RUN"
         source_name = str(args.audio_file) if args.audio_file else "default microphone"
         print("{} voice control; source={}.".format(mode, source_name), flush=True)
@@ -387,7 +392,11 @@ def run(args) -> int:
 
         while True:
             now_s = time.monotonic()
-            if args.duration > 0.0 and now_s - start_s >= args.duration:
+            if (
+                args.duration > 0.0
+                and start_s is not None
+                and now_s - start_s >= args.duration
+            ):
                 print("Duration reached; stopping.", flush=True)
                 break
 
