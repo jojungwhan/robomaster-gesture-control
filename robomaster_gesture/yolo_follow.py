@@ -22,6 +22,18 @@ from .robot_adapter import (
     RobotError,
     S1AppKeyboardAdapter,
 )
+from .scene_speech import (
+    PiperSceneSpeaker,
+    SceneNarrationPolicy,
+    describe_scene,
+)
+
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+WORKSPACE_PARENT = PROJECT_ROOT.parent
+DEFAULT_PIPER_PYTHON = WORKSPACE_PARENT / ".venv-piper" / "Scripts" / "python.exe"
+DEFAULT_PIPER_MODEL = WORKSPACE_PARENT / "piper-voices" / "en_US-john-medium.onnx"
+DEFAULT_PIPER_WORKER = PROJECT_ROOT / "scripts" / "piper_scene_worker.py"
 
 
 @dataclass(frozen=True)
@@ -267,6 +279,7 @@ class UltralyticsTracker:
         tracker: str,
         target_label: str,
         persist_tracks: bool = True,
+        describe_all: bool = False,
     ):
         try:
             from ultralytics import YOLO
@@ -286,12 +299,15 @@ class UltralyticsTracker:
             if isinstance(raw_names, dict)
             else dict(enumerate(raw_names))
         )
-        wanted = {target_label.casefold(), "person"}
-        self.class_ids = [
-            class_id
-            for class_id, label in self.names.items()
-            if str(label).casefold() in wanted
-        ]
+        if describe_all:
+            self.class_ids = None
+        else:
+            wanted = {target_label.casefold(), "person"}
+            self.class_ids = [
+                class_id
+                for class_id, label in self.names.items()
+                if str(label).casefold() in wanted
+            ]
         if not any(
             str(label).casefold() == target_label.casefold()
             for label in self.names.values()
@@ -308,9 +324,10 @@ class UltralyticsTracker:
             conf=self.confidence,
             imgsz=self.image_size,
             device=self.device,
-            classes=self.class_ids,
             verbose=False,
         )
+        if self.class_ids is not None:
+            arguments["classes"] = self.class_ids
         if self.persist_tracks:
             results = self.model.track(
                 frame,
@@ -817,6 +834,19 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--frame-interval", type=float, default=0.08)
     parser.add_argument("--duration", type=float, default=0.0)
     parser.add_argument("--no-preview", action="store_true")
+    parser.add_argument(
+        "--speak",
+        action="store_true",
+        help="describe recognized objects aloud with local Piper neural TTS",
+    )
+    parser.add_argument("--speech-confidence", type=float, default=0.45)
+    parser.add_argument("--speech-stable-frames", type=int, default=3)
+    parser.add_argument("--speech-repeat-seconds", type=float, default=12.0)
+    parser.add_argument("--speech-clear-seconds", type=float, default=3.0)
+    parser.add_argument("--speech-max-groups", type=int, default=4)
+    parser.add_argument("--piper-python", type=Path, default=DEFAULT_PIPER_PYTHON)
+    parser.add_argument("--piper-model", type=Path, default=DEFAULT_PIPER_MODEL)
+    parser.add_argument("--piper-worker", type=Path, default=DEFAULT_PIPER_WORKER)
     parser.add_argument("--live", action="store_true")
     parser.add_argument("--transport", choices=("sdk", "s1-app"), default="s1-app")
     parser.add_argument("--connection", choices=("ap", "sta", "rndis"), default="sta")
@@ -854,6 +884,16 @@ def _validate_args(args) -> FollowConfig:
         raise ValueError("--max-inference-seconds must be between 0.10 and 5 seconds")
     if args.duration < 0.0:
         raise ValueError("--duration cannot be negative")
+    if not 0.0 <= args.speech_confidence <= 1.0:
+        raise ValueError("--speech-confidence must be between 0 and 1")
+    if args.speech_stable_frames < 1:
+        raise ValueError("--speech-stable-frames must be positive")
+    if args.speech_repeat_seconds < 1.0:
+        raise ValueError("--speech-repeat-seconds must be at least one second")
+    if args.speech_clear_seconds < 0.0:
+        raise ValueError("--speech-clear-seconds cannot be negative")
+    if not 1 <= args.speech_max_groups <= 8:
+        raise ValueError("--speech-max-groups must be between 1 and 8")
     config = FollowConfig(
         target_label=args.target,
         target_confidence=args.confidence,
@@ -912,9 +952,12 @@ def _make_frame_source(args, motion_adapter):
 def run(args) -> int:
     config = _validate_args(args)
     follower = TargetFollower(config)
+    inference_confidence = min(args.confidence, args.person_stop_confidence)
+    if args.speak:
+        inference_confidence = min(inference_confidence, args.speech_confidence)
     tracker = UltralyticsTracker(
         model_name=args.model,
-        confidence=args.confidence,
+        confidence=inference_confidence,
         image_size=args.image_size,
         device=args.device,
         tracker=args.tracker,
@@ -925,6 +968,7 @@ def run(args) -> int:
             and args.input_file.suffix.casefold()
             in {".bmp", ".jpg", ".jpeg", ".png", ".webp"}
         ),
+        describe_all=args.speak,
     )
     motion_adapter = _make_motion_adapter(args)
     frame_source = None
@@ -932,6 +976,8 @@ def run(args) -> int:
     controller_lease = None  # type: Optional[ControllerLease]
     pump = None
     preview = None
+    speaker = None
+    narration_policy = None
     publisher = ControlStatusPublisher(
         path=args.status_file,
         live=args.live,
@@ -951,6 +997,24 @@ def run(args) -> int:
         motion_adapter.connect()
         frame_source, camera_adapter = _make_frame_source(args, motion_adapter)
         frame_source.open()
+        if args.speak:
+            speaker = PiperSceneSpeaker(
+                python_executable=args.piper_python,
+                worker=args.piper_worker,
+                model=args.piper_model,
+            )
+            speaker.start()
+            narration_policy = SceneNarrationPolicy(
+                stable_frames=args.speech_stable_frames,
+                repeat_seconds=args.speech_repeat_seconds,
+                clear_seconds=args.speech_clear_seconds,
+            )
+            print(
+                "English scene narration enabled with Piper voice {}.".format(
+                    args.piper_model.stem
+                ),
+                flush=True,
+            )
         if not args.no_preview:
             preview = NonActivatingPreview()
         pump = CommandPump(
@@ -1017,6 +1081,27 @@ def run(args) -> int:
                 GestureDecision("YOLO", current.reason, current.command)
             )
 
+            if speaker is not None and narration_policy is not None:
+                scene = describe_scene(
+                    detections,
+                    frame_width=int(frame.shape[1]),
+                    confidence=args.speech_confidence,
+                    maximum_groups=args.speech_max_groups,
+                )
+                spoken_text = narration_policy.update(scene, now_s=inference_done)
+                if spoken_text:
+                    speaker.speak(spoken_text)
+                    print("ROBOT SAYS: {}".format(spoken_text), flush=True)
+                if speaker.error is not None:
+                    print(
+                        "WARNING: scene speech disabled: {}".format(speaker.error),
+                        file=sys.stderr,
+                        flush=True,
+                    )
+                    speaker.close()
+                    speaker = None
+                    narration_policy = None
+
             signature = (current.state, current.reason, translation_directions(current.command))
             if signature != last_signature:
                 movement = " + ".join(signature[2]) if signature[2] else "STOP"
@@ -1048,6 +1133,8 @@ def run(args) -> int:
             frame_source.close()
         if preview is not None:
             preview.close()
+        if speaker is not None:
+            speaker.close()
         if camera_adapter is not None and camera_adapter is not motion_adapter:
             camera_adapter.close()
         motion_adapter.close()

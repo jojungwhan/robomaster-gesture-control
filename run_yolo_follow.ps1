@@ -23,6 +23,14 @@ param(
     [double]$StrafeSpeed = 0.12,
     [double]$PersonStopConfidence = 0.30,
     [double]$MaxInferenceSeconds = 1.50,
+    [switch]$Speak,
+    [double]$SpeechConfidence = 0.45,
+    [int]$SpeechStableFrames = 3,
+    [double]$SpeechRepeatSeconds = 12.0,
+    [double]$SpeechClearSeconds = 3.0,
+    [int]$SpeechMaxGroups = 4,
+    [string]$PiperPython,
+    [string]$PiperModel,
     [double]$Duration = 0,
     [switch]$NoPreview,
     [string]$RobotIp,
@@ -55,9 +63,17 @@ $arguments = @(
     '--forward-speed', $ForwardSpeed,
     '--strafe-speed', $StrafeSpeed,
     '--person-stop-confidence', $PersonStopConfidence,
-    '--max-inference-seconds', $MaxInferenceSeconds
+    '--max-inference-seconds', $MaxInferenceSeconds,
+    '--speech-confidence', $SpeechConfidence,
+    '--speech-stable-frames', $SpeechStableFrames,
+    '--speech-repeat-seconds', $SpeechRepeatSeconds,
+    '--speech-clear-seconds', $SpeechClearSeconds,
+    '--speech-max-groups', $SpeechMaxGroups
 )
 if ($Live) { $arguments += '--live' }
+if ($Speak) { $arguments += '--speak' }
+if ($PiperPython) { $arguments += @('--piper-python', $PiperPython) }
+if ($PiperModel) { $arguments += @('--piper-model', $PiperModel) }
 if ($InputFile) { $arguments += @('--input-file', $InputFile) }
 if ($Duration -gt 0) { $arguments += @('--duration', $Duration) }
 if ($NoPreview) { $arguments += '--no-preview' }
