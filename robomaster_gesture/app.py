@@ -7,9 +7,10 @@ import threading
 import time
 from typing import Optional, Sequence
 
+from .control_status import DEFAULT_CONTROL_STATUS_PATH, ControlStatusPublisher
 from .gesture import GestureConfig, GestureController
 from .leap_source import LeapSource, LeapSourceError
-from .models import GestureDecision, VelocityCommand
+from .models import GestureDecision, VelocityCommand, translation_directions
 from .robot_adapter import (
     CommandPump,
     CommandPumpConfig,
@@ -71,6 +72,8 @@ class ConsoleReporter:
                 return
 
         command = decision.command
+        directions = translation_directions(command)
+        motion_text = "+".join(directions) if directions else "STOP"
         hand_text = "none"
         if decision.hand is not None:
             hand_text = (
@@ -84,12 +87,13 @@ class ConsoleReporter:
             )
         print(
             "[{:<7}] x={:+.2f}m/s y={:+.2f}m/s z={:+.0f}deg/s | "
-            "{} | hand={} | leap={}/{}".format(
+            "{} | motion={} | hand={} | leap={}/{}".format(
                 decision.state,
                 command.forward_m_s,
                 command.right_m_s,
                 command.clockwise_deg_s,
                 decision.reason,
+                motion_text,
                 hand_text,
                 "service" if service_connected else "no-service",
                 "device" if device_present else "no-device",
@@ -169,6 +173,12 @@ def build_parser() -> argparse.ArgumentParser:
         default=DEFAULT_BRIDGE_DLL,
         help="path to leap_hand_bridge.dll",
     )
+    parser.add_argument(
+        "--status-file",
+        type=Path,
+        default=DEFAULT_CONTROL_STATUS_PATH,
+        help="local command-status file used by the hand overlay",
+    )
     return parser
 
 
@@ -199,6 +209,7 @@ def run(args: argparse.Namespace) -> int:
     robot = make_robot(args)
     source = None  # type: Optional[LeapSource]
     pump = None  # type: Optional[CommandPump]
+    status_publisher = None  # type: Optional[ControlStatusPublisher]
 
     if args.live:
         print(
@@ -277,10 +288,28 @@ def run(args: argparse.Namespace) -> int:
                 ),
             )
         )
+        status_publisher = ControlStatusPublisher(
+            path=args.status_file,
+            live=args.live,
+            transport=args.transport,
+        )
+        status_publisher.publish(
+            GestureDecision(
+                state=controller.state.value,
+                reason="controller started - stopped",
+                command=VelocityCommand.stopped(),
+            ),
+            force=True,
+        )
         reporter = ConsoleReporter()
         start_s = time.monotonic()
         last_tracking_frame_s = start_s
         stale_reported = False
+        current_decision = GestureDecision(
+            state=controller.state.value,
+            reason="controller started - stopped",
+            command=VelocityCommand.stopped(),
+        )
 
         print(
             "Controls: hold one open {} hand until READY, pinch for 0.35s, "
@@ -305,23 +334,27 @@ def run(args: argparse.Namespace) -> int:
             frame = source.poll(timeout_ms=50)
             if frame is None:
                 if now_s - last_tracking_frame_s > 0.20 and not stale_reported:
-                    decision = controller.on_tracking_timeout(now_s)
+                    current_decision = controller.on_tracking_timeout(now_s)
                     pump.submit(VelocityCommand.stopped())
+                    status_publisher.publish(current_decision, force=True)
                     reporter.report(
-                        decision,
+                        current_decision,
                         source.service_connected,
                         source.device_present,
                         force=True,
                     )
                     stale_reported = True
+                else:
+                    status_publisher.publish(current_decision)
                 continue
 
             last_tracking_frame_s = frame.arrival_time_s
             stale_reported = False
-            decision = controller.update(frame)
-            pump.submit(decision.command)
+            current_decision = controller.update(frame)
+            pump.submit(current_decision.command)
+            status_publisher.publish(current_decision)
             reporter.report(
-                decision, source.service_connected, source.device_present
+                current_decision, source.service_connected, source.device_present
             )
 
             if pump.error is not None:
@@ -330,6 +363,18 @@ def run(args: argparse.Namespace) -> int:
     except KeyboardInterrupt:
         print("\nCtrl+C received; stopping immediately.", flush=True)
     finally:
+        if status_publisher is not None:
+            try:
+                status_publisher.publish(
+                    GestureDecision(
+                        state="WAITING",
+                        reason="controller stopped",
+                        command=VelocityCommand.stopped(),
+                    ),
+                    force=True,
+                )
+            except OSError:
+                pass
         if pump is not None:
             pump.halt()
             pump.close()

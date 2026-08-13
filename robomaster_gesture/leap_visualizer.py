@@ -17,6 +17,9 @@ import threading
 import time
 from typing import Optional, Sequence, Tuple
 
+from .control_status import DEFAULT_CONTROL_STATUS_PATH, ControlStatusReader
+from .models import translation_directions
+
 
 @dataclass(frozen=True)
 class Point3:
@@ -292,6 +295,7 @@ class OverlayWindow:
         y: int,
         opacity: float,
         duration_s: float,
+        control_reader: ControlStatusReader,
     ):
         import tkinter as tk
 
@@ -300,6 +304,7 @@ class OverlayWindow:
         self.width = width
         self.height = height
         self.duration_s = duration_s
+        self.control_reader = control_reader
         self.started_at_s = time.monotonic()
         self._closing = False
 
@@ -590,28 +595,36 @@ class OverlayWindow:
             16, center_y, self.width - 16, center_y, fill=self.GRID
         )
         self.canvas.create_text(
-            18,
+            center_x,
             view_top + 10,
-            text="LEFT",
+            text="HAND AWAY = ROBOT FORWARD",
             fill=self.MUTED,
             font=("Segoe UI", 8),
-            anchor="nw",
+            anchor="n",
+        )
+        self.canvas.create_text(
+            18,
+            center_y,
+            text="<  ROBOT LEFT",
+            fill=self.MUTED,
+            font=("Segoe UI", 8),
+            anchor="w",
         )
         self.canvas.create_text(
             self.width - 18,
-            view_top + 10,
-            text="RIGHT",
+            center_y,
+            text="ROBOT RIGHT  >",
             fill=self.MUTED,
             font=("Segoe UI", 8),
-            anchor="ne",
+            anchor="e",
         )
         self.canvas.create_text(
-            18,
+            center_x,
             view_bottom - 10,
-            text="TOWARD YOU",
+            text="HAND TOWARD YOU = ROBOT BACK",
             fill=self.MUTED,
             font=("Segoe UI", 8),
-            anchor="sw",
+            anchor="s",
         )
 
         if snapshot.hands and not stale:
@@ -630,6 +643,29 @@ class OverlayWindow:
                 fill=self.MUTED,
                 font=("Segoe UI Semibold", 12),
             )
+
+        control = self.control_reader.latest()
+        control_fresh = (
+            control is not None
+            and 0.0 <= time.time() - control.updated_at_epoch_s <= 0.75
+        )
+        if control_fresh:
+            directions = translation_directions(control.command)
+            mode = "ROBOT" if control.live else "DRY RUN"
+            movement = " + ".join(directions) if directions else "STOP"
+            control_text = "{}  {}  [{}]".format(mode, movement, control.state)
+            control_color = self.WARN if control.live and directions else self.GOOD
+        else:
+            control_text = "ROBOT CONTROL  OFF"
+            control_color = self.MUTED
+        self.canvas.create_text(
+            self.width / 2,
+            self.height - 68,
+            text=control_text,
+            fill=control_color,
+            font=("Segoe UI Semibold", 9),
+            anchor="center",
+        )
 
         if snapshot.hands and not stale:
             primary = snapshot.hands[0]
@@ -705,6 +741,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--y", type=int, default=72)
     parser.add_argument("--opacity", type=float, default=0.90)
     parser.add_argument("--duration", type=float, default=0.0)
+    parser.add_argument(
+        "--control-status",
+        type=Path,
+        default=DEFAULT_CONTROL_STATUS_PATH,
+    )
     return parser
 
 
@@ -737,6 +778,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         y=max(0, args.y),
         opacity=args.opacity,
         duration_s=max(0.0, args.duration),
+        control_reader=ControlStatusReader(args.control_status),
     )
     overlay.run()
     return 0

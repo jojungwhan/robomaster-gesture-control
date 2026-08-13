@@ -86,6 +86,18 @@ class S1AppKeyboardAdapterTests(unittest.TestCase):
         finally:
             adapter.close()
 
+    def test_each_cardinal_command_maps_to_expected_key(self):
+        cases = (
+            ("forward", VelocityCommand(forward_m_s=0.2), "w"),
+            ("back", VelocityCommand(forward_m_s=-0.2), "s"),
+            ("left", VelocityCommand(right_m_s=-0.2), "a"),
+            ("right", VelocityCommand(right_m_s=0.2), "d"),
+        )
+        for name, command, expected_key in cases:
+            with self.subTest(direction=name):
+                adapter = self.make_adapter(FakeKeyboardBackend())
+                self.assertEqual({expected_key}, adapter._keys_for(command))
+
     def test_connect_activates_robomaster_window(self):
         backend = FakeKeyboardBackend()
         backend.foreground = False

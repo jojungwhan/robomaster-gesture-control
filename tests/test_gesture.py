@@ -99,6 +99,31 @@ class GestureControllerTests(unittest.TestCase):
         self.assertGreater(result.command.forward_m_s, 0.30)
         self.assertGreater(result.command.right_m_s, 0.30)
 
+    def test_cardinal_hand_motion_maps_to_robot_directions(self):
+        cases = (
+            ("away from user", 0.0, -220.0, "forward_m_s", 1),
+            ("toward user", 0.0, 20.0, "forward_m_s", -1),
+            ("left", -120.0, -100.0, "right_m_s", -1),
+            ("right", 120.0, -100.0, "right_m_s", 1),
+        )
+        for name, x, z, axis, expected_sign in cases:
+            with self.subTest(hand_motion=name):
+                controller = GestureController(
+                    GestureConfig(smoothing_time_s=0.01)
+                )
+                arm(controller)
+                result = controller.update(
+                    make_frame(1.05, make_hand(x=x, z=z, pinch=0.95))
+                )
+                value = getattr(result.command, axis)
+                self.assertGreater(value * expected_sign, 0.30)
+                other_axis = (
+                    result.command.right_m_s
+                    if axis == "forward_m_s"
+                    else result.command.forward_m_s
+                )
+                self.assertAlmostEqual(0.0, other_axis)
+
     def test_wrist_yaw_maps_to_clockwise_rotation(self):
         controller = GestureController(GestureConfig(smoothing_time_s=0.01))
         arm(controller)

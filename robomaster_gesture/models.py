@@ -64,6 +64,25 @@ class VelocityCommand:
         )
 
 
+def translation_directions(
+    command: VelocityCommand, threshold: float = 0.015
+) -> Tuple[str, ...]:
+    """Return the cardinal chassis directions represented by a command."""
+    if threshold <= 0.0:
+        raise ValueError("direction threshold must be positive")
+
+    directions = []
+    if command.forward_m_s >= threshold:
+        directions.append("FORWARD")
+    elif command.forward_m_s <= -threshold:
+        directions.append("BACK")
+    if command.right_m_s >= threshold:
+        directions.append("RIGHT")
+    elif command.right_m_s <= -threshold:
+        directions.append("LEFT")
+    return tuple(directions)
+
+
 @dataclass(frozen=True)
 class GestureDecision:
     state: str
