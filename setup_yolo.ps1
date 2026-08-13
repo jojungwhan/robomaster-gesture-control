@@ -1,5 +1,6 @@
 param(
-    [switch]$Upgrade
+    [switch]$Upgrade,
+    [switch]$SkipModels
 )
 
 $ErrorActionPreference = 'Stop'
@@ -15,4 +16,17 @@ if ($Upgrade) { $arguments += '--upgrade' }
 if ($LASTEXITCODE -ne 0) {
     throw "YOLO dependency installation failed with exit code $LASTEXITCODE"
 }
-Write-Host 'YOLO dependencies installed. Model weights download on first use.'
+if (-not $SkipModels) {
+    Push-Location -LiteralPath $PSScriptRoot
+    try {
+        & $pythonCommand -c "from ultralytics import YOLO, YOLOE; YOLO('yolo11n.pt'); YOLOE('yoloe-26n-seg-pf.pt')"
+        if ($LASTEXITCODE -ne 0) {
+            throw "YOLO model download failed with exit code $LASTEXITCODE"
+        }
+    } finally {
+        Pop-Location
+    }
+    Write-Host 'YOLO dependencies and default models are ready.'
+} else {
+    Write-Host 'YOLO dependencies installed; model download was skipped.'
+}

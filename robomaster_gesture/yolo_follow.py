@@ -13,6 +13,7 @@ from typing import Optional, Sequence, Tuple
 
 from .control_lease import ControlLeaseError, ControllerLease
 from .control_status import DEFAULT_CONTROL_STATUS_PATH, ControlStatusPublisher
+from .expanded_scene import ExpandedSceneRecognizer
 from .models import GestureDecision, VelocityCommand, translation_directions
 from .robot_adapter import (
     CommandPump,
@@ -26,6 +27,7 @@ from .scene_speech import (
     PiperSceneSpeaker,
     SceneNarrationPolicy,
     describe_scene,
+    merge_scene_detections,
 )
 
 
@@ -36,6 +38,8 @@ DEFAULT_PIPER_MODEL = (
     WORKSPACE_PARENT / "piper-voices" / "en_US-kristin-medium.onnx"
 )
 DEFAULT_PIPER_WORKER = PROJECT_ROOT / "scripts" / "piper_scene_worker.py"
+DEFAULT_EXPANDED_SCENE_MODEL = PROJECT_ROOT / "yoloe-26n-seg-pf.pt"
+DEFAULT_EXPANDED_SCENE_WORKER = PROJECT_ROOT / "scripts" / "expanded_scene_worker.py"
 
 
 @dataclass(frozen=True)
@@ -740,11 +744,31 @@ class NonActivatingPreview:
             pass
 
 
-def annotate_frame(frame, detections, decision: FollowDecision, fps: float):
+def annotate_frame(
+    frame,
+    detections,
+    decision: FollowDecision,
+    fps: float,
+    narration_only=(),
+):
     import cv2
 
     annotated = frame.copy()
     target = decision.target
+    for item in narration_only:
+        x1, y1, x2, y2 = (int(round(value)) for value in item.box)
+        color = (220, 80, 220)
+        cv2.rectangle(annotated, (x1, y1), (x2, y2), color, 2)
+        cv2.putText(
+            annotated,
+            "SCENE {} {:.2f}".format(item.label, item.confidence),
+            (x1, max(18, y1 - 7)),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.52,
+            color,
+            2,
+            cv2.LINE_AA,
+        )
     for item in detections:
         x1, y1, x2, y2 = (int(round(value)) for value in item.box)
         selected = target is item or (
@@ -846,6 +870,20 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--speech-repeat-seconds", type=float, default=12.0)
     parser.add_argument("--speech-clear-seconds", type=float, default=3.0)
     parser.add_argument("--speech-max-groups", type=int, default=4)
+    parser.add_argument(
+        "--basic-scene-only",
+        action="store_true",
+        help="disable the narration-only expanded furniture recognizer",
+    )
+    parser.add_argument("--expanded-scene-confidence", type=float, default=0.35)
+    parser.add_argument("--expanded-scene-image-size", type=int, default=320)
+    parser.add_argument("--expanded-scene-interval", type=float, default=1.5)
+    parser.add_argument(
+        "--expanded-scene-model", type=Path, default=DEFAULT_EXPANDED_SCENE_MODEL
+    )
+    parser.add_argument(
+        "--expanded-scene-worker", type=Path, default=DEFAULT_EXPANDED_SCENE_WORKER
+    )
     parser.add_argument("--piper-python", type=Path, default=DEFAULT_PIPER_PYTHON)
     parser.add_argument("--piper-model", type=Path, default=DEFAULT_PIPER_MODEL)
     parser.add_argument("--piper-worker", type=Path, default=DEFAULT_PIPER_WORKER)
@@ -896,6 +934,12 @@ def _validate_args(args) -> FollowConfig:
         raise ValueError("--speech-clear-seconds cannot be negative")
     if not 1 <= args.speech_max_groups <= 8:
         raise ValueError("--speech-max-groups must be between 1 and 8")
+    if not 0.0 <= args.expanded_scene_confidence <= 1.0:
+        raise ValueError("--expanded-scene-confidence must be between 0 and 1")
+    if args.expanded_scene_image_size < 160:
+        raise ValueError("--expanded-scene-image-size must be at least 160")
+    if not 0.5 <= args.expanded_scene_interval <= 60.0:
+        raise ValueError("--expanded-scene-interval must be between 0.5 and 60 seconds")
     config = FollowConfig(
         target_label=args.target,
         target_confidence=args.confidence,
@@ -980,6 +1024,7 @@ def run(args) -> int:
     preview = None
     speaker = None
     narration_policy = None
+    expanded_scene = None
     publisher = ControlStatusPublisher(
         path=args.status_file,
         live=args.live,
@@ -990,7 +1035,7 @@ def run(args) -> int:
     last_frame_at = time.monotonic()
     last_loop_at = 0.0
     fps = 0.0
-    start_s = time.monotonic()
+    start_s = None
 
     try:
         if args.live:
@@ -1017,6 +1062,32 @@ def run(args) -> int:
                 ),
                 flush=True,
             )
+            if not args.basic_scene_only:
+                try:
+                    expanded_scene = ExpandedSceneRecognizer(
+                        python_executable=Path(sys.executable),
+                        worker=args.expanded_scene_worker,
+                        model=args.expanded_scene_model,
+                        confidence=args.expanded_scene_confidence,
+                        image_size=args.expanded_scene_image_size,
+                        interval_s=args.expanded_scene_interval,
+                    )
+                    expanded_scene.start(timeout_s=90.0)
+                    print(
+                        "Expanded furniture recognition enabled with {}.".format(
+                            args.expanded_scene_model.stem
+                        ),
+                        flush=True,
+                    )
+                except RuntimeError as exc:
+                    if expanded_scene is not None:
+                        expanded_scene.close()
+                    expanded_scene = None
+                    print(
+                        "WARNING: expanded scene recognition disabled: {}".format(exc),
+                        file=sys.stderr,
+                        flush=True,
+                    )
         if not args.no_preview:
             preview = NonActivatingPreview()
         pump = CommandPump(
@@ -1046,10 +1117,15 @@ def run(args) -> int:
             "loss stops immediately.".format(config.minimum_lock_frames),
             flush=True,
         )
+        start_s = time.monotonic()
 
         while True:
             loop_started = time.monotonic()
-            if args.duration > 0.0 and loop_started - start_s >= args.duration:
+            if (
+                args.duration > 0.0
+                and start_s is not None
+                and loop_started - start_s >= args.duration
+            ):
                 print("Duration reached; stopping.", flush=True)
                 break
             frame = frame_source.read()
@@ -1065,6 +1141,7 @@ def run(args) -> int:
             last_frame_at = time.monotonic()
             detections = tracker.track(frame)
             inference_done = time.monotonic()
+            narration_only = ()
             elapsed = inference_done - last_loop_at if last_loop_at else 0.0
             if elapsed > 0.0:
                 fps = 1.0 / elapsed
@@ -1084,16 +1161,60 @@ def run(args) -> int:
             )
 
             if speaker is not None and narration_policy is not None:
-                scene = describe_scene(
-                    detections,
-                    frame_width=int(frame.shape[1]),
-                    confidence=args.speech_confidence,
-                    maximum_groups=args.speech_max_groups,
+                expanded_detections = ()
+                narration_ready = True
+                if expanded_scene is not None:
+                    expanded_scene.submit(frame, now_s=inference_done)
+                    expanded_detections = tuple(
+                        Detection(
+                            label=str(item["label"]),
+                            confidence=float(item["confidence"]),
+                            box=tuple(float(value) for value in item["box"]),
+                        )
+                        for item in expanded_scene.detections(
+                            max_age_s=max(2.0, args.expanded_scene_interval * 1.75)
+                        )
+                        if float(item["confidence"])
+                        >= args.expanded_scene_confidence
+                    )
+                    narration_ready = expanded_scene.has_confirmed_scan
+                    if expanded_scene.error is not None:
+                        print(
+                            "WARNING: expanded scene recognition disabled: {}".format(
+                                expanded_scene.error
+                            ),
+                            file=sys.stderr,
+                            flush=True,
+                        )
+                        expanded_scene.close()
+                        expanded_scene = None
+                        narration_ready = True
+                narration_detections = merge_scene_detections(
+                    tuple(
+                        item
+                        for item in detections
+                        if item.confidence >= args.speech_confidence
+                    ),
+                    expanded_detections,
                 )
-                spoken_text = narration_policy.update(scene, now_s=inference_done)
-                if spoken_text:
-                    speaker.speak(spoken_text)
-                    print("ROBOT SAYS: {}".format(spoken_text), flush=True)
+                narration_only = tuple(
+                    item
+                    for item in narration_detections
+                    if not any(item is primary for primary in detections)
+                )
+                if narration_ready:
+                    scene = describe_scene(
+                        narration_detections,
+                        frame_width=int(frame.shape[1]),
+                        confidence=0.0,
+                        maximum_groups=args.speech_max_groups,
+                    )
+                    spoken_text = narration_policy.update(
+                        scene, now_s=inference_done
+                    )
+                    if spoken_text:
+                        speaker.speak(spoken_text)
+                        print("ROBOT SAYS: {}".format(spoken_text), flush=True)
                 if speaker.error is not None:
                     print(
                         "WARNING: scene speech disabled: {}".format(speaker.error),
@@ -1103,6 +1224,9 @@ def run(args) -> int:
                     speaker.close()
                     speaker = None
                     narration_policy = None
+                    if expanded_scene is not None:
+                        expanded_scene.close()
+                        expanded_scene = None
 
             signature = (current.state, current.reason, translation_directions(current.command))
             if signature != last_signature:
@@ -1116,7 +1240,15 @@ def run(args) -> int:
                 last_signature = signature
 
             if preview is not None:
-                preview.show(annotate_frame(frame, detections, current, fps))
+                preview.show(
+                    annotate_frame(
+                        frame,
+                        detections,
+                        current,
+                        fps,
+                        narration_only=narration_only,
+                    )
+                )
                 if preview.closed:
                     preview = None
             if pump.error is not None:
@@ -1137,6 +1269,8 @@ def run(args) -> int:
             preview.close()
         if speaker is not None:
             speaker.close()
+        if expanded_scene is not None:
+            expanded_scene.close()
         if camera_adapter is not None and camera_adapter is not motion_adapter:
             camera_adapter.close()
         motion_adapter.close()

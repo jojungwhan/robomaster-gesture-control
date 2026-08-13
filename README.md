@@ -166,8 +166,9 @@ left/right until the target is centered, approaches it slowly, and stops when
 the target box reaches the configured size. A machine-local lease prevents
 gesture, voice, and YOLO live controllers from running simultaneously.
 
-The default `yolo11n.pt` weights download on first use and are not committed.
-Ultralytics code and pretrained models use AGPL-3.0 by default; review
+Setup downloads the default `yolo11n.pt` follow model and compact
+`yoloe-26n-seg-pf.pt` narration model; neither is committed. Ultralytics code
+and pretrained models use AGPL-3.0 by default; review
 `THIRD_PARTY_NOTICES.md` and Ultralytics licensing before deployment.
 
 ### Natural English scene speech
@@ -181,12 +182,18 @@ Then add `-Speak` to a YOLO run:
 
     .\run_yolo_follow.ps1 -Speak -Target bottle
 
-The detector describes all recognized model classes, not only the follow
-target, using counts and positions such as `I see a bus ahead and two people on
-the left.` A scene must remain stable for three frames before it is announced;
-unchanged scenes are repeated no more than once every 12 seconds. Speech runs
-in a persistent replace-latest worker, so synthesis and playback never block
-camera inference or the robot's motion watchdog.
+The detector describes objects beyond the follow target, using counts and
+positions such as `I see a desk ahead, a chair on the left, and a table on the
+right.` A compact prompt-free YOLOE model expands narration with furniture such
+as chairs, desks, tables, bookshelves, cabinets, doors, windows, monitors,
+lamps, mirrors, beds, and couches. It runs only in a low-priority background
+worker, confirms additions across two separate scans, and never supplies
+detections to movement or person-stop logic. Use `-BasicSceneOnly` to disable
+it. Expanded labels are shown in purple as `SCENE <label>` and are for
+narration, not follow targets. A scene must remain stable for three frames
+before it is announced; unchanged scenes are repeated no more than once every
+12 seconds. Speech and expanded recognition use replace-latest workers, so
+neither blocks camera inference or the robot's motion watchdog.
 
 With the stock S1 app transport, speech comes from the PC's default audio
 output because that transport exposes only W/A/S/D movement. The selected
@@ -218,5 +225,6 @@ Before live control, put the robot on a clear floor or raise the wheels, keep th
 - DJI S1 keyboard controls (user manual): https://dl.djicdn.com/downloads/robomaster-s1/20200324/RoboMaster_S1_User_Manual_v1.8_EN.pdf
 - Microsoft offline WAV speech input: https://learn.microsoft.com/en-us/dotnet/api/system.speech.recognition.speechrecognitionengine.setinputtowavefile
 - Ultralytics multi-object tracking: https://docs.ultralytics.com/modes/track
+- Ultralytics YOLOE open-vocabulary detection: https://docs.ultralytics.com/models/yoloe
 - Piper local neural speech: https://github.com/OHF-Voice/piper1-gpl
 - Piper `en_US-kristin-medium` voice card: https://huggingface.co/rhasspy/piper-voices/blob/main/en/en_US/kristin/medium/MODEL_CARD

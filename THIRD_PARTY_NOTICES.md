@@ -17,10 +17,11 @@ https://github.com/ultraleap/leapc-python-bindings/blob/main/LICENSE.md.
 
 Optional object detection and tracking imports the separately installed
 [`ultralytics`](https://github.com/ultralytics/ultralytics) package and downloads
-Ultralytics pretrained model weights on first use. The package and pretrained
-models are offered under AGPL-3.0 by default; commercial or closed-source use
-requires an appropriate Ultralytics Enterprise license. Neither the package nor
-model weights are stored in this repository. See
+Ultralytics pretrained model weights during setup. This includes the default
+YOLO11 follow model and the prompt-free YOLOE narration model. The package and
+pretrained models are offered under AGPL-3.0 by default; commercial or
+closed-source use requires an appropriate Ultralytics Enterprise license.
+Neither the package nor model weights are stored in this repository. See
 https://www.ultralytics.com/license before deployment.
 
 ## Piper neural text-to-speech
