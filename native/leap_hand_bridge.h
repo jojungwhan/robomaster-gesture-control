@@ -14,7 +14,6 @@
 #  define LHB_CALL
 #  define LHB_API
 #endif
-
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -88,4 +87,3 @@ LHB_API void LHB_CALL lhb_destroy(void *context);
 #endif
 
 #endif
-

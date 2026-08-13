@@ -6,7 +6,6 @@ find_package(
   LeapSDK 6 REQUIRED
   PATHS "$ENV{ProgramFiles}/Ultraleap"
 )
-
 add_library(leap_hand_bridge SHARED
   native/leap_hand_bridge.c
   native/leap_hand_bridge.h
@@ -34,4 +33,3 @@ add_custom_command(
           ${LEAPC_SHARED_LIB_PATH}
           $<TARGET_FILE_DIR:leap_hand_bridge>
 )
-

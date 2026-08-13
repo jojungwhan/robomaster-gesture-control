@@ -70,4 +70,3 @@ class GestureDecision:
     reason: str
     command: VelocityCommand
     hand: HandSample = None
-
