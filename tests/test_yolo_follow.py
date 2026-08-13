@@ -2,6 +2,7 @@ import unittest
 from pathlib import Path
 
 from robomaster_gesture.yolo_follow import (
+    DEFAULT_PIPER_MODEL,
     Detection,
     FollowConfig,
     TargetFollower,
@@ -15,6 +16,9 @@ def detection(label="bottle", box=(270, 140, 370, 300), confidence=0.9, track_id
 
 
 class TargetFollowerTests(unittest.TestCase):
+    def test_default_scene_voice_is_female_kristin(self):
+        self.assertEqual("en_US-kristin-medium.onnx", DEFAULT_PIPER_MODEL.name)
+
     def make_follower(self, **kwargs):
         return TargetFollower(
             FollowConfig(
