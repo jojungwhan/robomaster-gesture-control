@@ -160,7 +160,8 @@ For an EP/EP Core with SDK camera access:
 
 Live mode permits only the robot-mounted camera source and refuses to follow a
 person. It requires three consecutive target frames before movement; target
-loss, a changed track ID, stale inference, camera loss, app focus loss, or any
+loss, a changed track ID, stale inference, a frozen camera frame, camera loss,
+app focus loss, or any
 person detected alongside a non-person target causes a stop. The robot strafes
 left/right until the target is centered, approaches it slowly, and stops when
 the target box reaches the configured size. A machine-local lease prevents

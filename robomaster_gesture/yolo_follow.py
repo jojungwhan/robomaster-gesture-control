@@ -103,6 +103,154 @@ class FollowDecision:
     height_ratio: float = 0.0
 
 
+@dataclass(frozen=True)
+class CameraFreshness:
+    fresh: bool
+    reason: str
+    changed_fraction: float = 0.0
+    confirmation_frames: int = 0
+
+
+class CameraFreshnessGuard:
+    """Require changing camera pixels before allowing follower decisions.
+
+    RoboMaster app capture also succeeds on menus and on a frozen render.  This
+    guard samples the unobstructed center of the frame and fails closed until
+    several meaningful changes have arrived.  Once armed, a prolonged freeze
+    disarms it and requires the changing-frame sequence again.
+    """
+
+    def __init__(
+        self,
+        minimum_changed_frames: int = 3,
+        minimum_changed_fraction: float = 0.002,
+        pixel_delta: float = 2.0,
+        freeze_after_s: float = 0.75,
+        sample_step: int = 8,
+    ):
+        if minimum_changed_frames < 1:
+            raise ValueError("minimum changed frames must be positive")
+        if not 0.0 < minimum_changed_fraction <= 1.0:
+            raise ValueError("minimum changed fraction must be in (0, 1]")
+        if pixel_delta <= 0.0:
+            raise ValueError("pixel delta must be positive")
+        if freeze_after_s <= 0.0:
+            raise ValueError("freeze timeout must be positive")
+        if sample_step < 1:
+            raise ValueError("sample step must be positive")
+        self.minimum_changed_frames = minimum_changed_frames
+        self.minimum_changed_fraction = minimum_changed_fraction
+        self.pixel_delta = pixel_delta
+        self.freeze_after_s = freeze_after_s
+        self.sample_step = sample_step
+        self._previous = None
+        self._last_change_at = None  # type: Optional[float]
+        self._confirmation_frames = 0
+        self._fresh = False
+
+    def update(self, frame, now_s: Optional[float] = None) -> CameraFreshness:
+        import numpy as np
+
+        now_s = time.monotonic() if now_s is None else float(now_s)
+        if frame is None or getattr(frame, "ndim", 0) not in (2, 3):
+            return self.reset("invalid camera frame - stopped")
+        height, width = frame.shape[:2]
+        if height < 5 or width < 5:
+            return self.reset("invalid camera frame - stopped")
+
+        # Avoid the app's outer chrome and most live-view HUD elements.
+        sample = frame[
+            height // 5 : (4 * height) // 5 : self.sample_step,
+            width // 5 : (4 * width) // 5 : self.sample_step,
+        ]
+        if sample.ndim == 3:
+            sample = sample[..., :3].astype(np.float32).mean(axis=2)
+        else:
+            sample = sample.astype(np.float32)
+
+        if self._previous is None or self._previous.shape != sample.shape:
+            self._previous = sample.copy()
+            self._last_change_at = now_s
+            self._confirmation_frames = 0
+            self._fresh = False
+            return self._waiting(0.0)
+
+        difference = np.abs(sample - self._previous)
+        self._previous = sample.copy()
+        changed_fraction = float(np.count_nonzero(difference >= self.pixel_delta)) / float(
+            difference.size
+        )
+        if changed_fraction >= self.minimum_changed_fraction:
+            self._last_change_at = now_s
+            if not self._fresh:
+                self._confirmation_frames += 1
+                if self._confirmation_frames >= self.minimum_changed_frames:
+                    self._fresh = True
+            return CameraFreshness(
+                self._fresh,
+                "camera stream changing"
+                if self._fresh
+                else self._waiting_reason(),
+                changed_fraction,
+                self._confirmation_frames,
+            )
+
+        if (
+            self._fresh
+            and self._last_change_at is not None
+            and now_s - self._last_change_at >= self.freeze_after_s
+        ):
+            self._fresh = False
+            self._confirmation_frames = 0
+            return CameraFreshness(
+                False,
+                "camera frame frozen - stopped",
+                changed_fraction,
+                0,
+            )
+        if (
+            not self._fresh
+            and self._last_change_at is not None
+            and now_s - self._last_change_at >= self.freeze_after_s
+        ):
+            self._confirmation_frames = 0
+            return CameraFreshness(
+                False,
+                "camera frame frozen - stopped",
+                changed_fraction,
+                0,
+            )
+        if self._fresh:
+            return CameraFreshness(
+                True,
+                "camera stream changing",
+                changed_fraction,
+                self._confirmation_frames,
+            )
+        return self._waiting(changed_fraction)
+
+    def reset(self, reason: str = "camera freshness reset") -> CameraFreshness:
+        self._previous = None
+        self._last_change_at = None
+        self._confirmation_frames = 0
+        self._fresh = False
+        return CameraFreshness(False, reason)
+
+    def _waiting_reason(self) -> str:
+        return "verifying camera freshness ({}/{})".format(
+            self._confirmation_frames,
+            self.minimum_changed_frames,
+        )
+
+    def _waiting(self, changed_fraction: float) -> CameraFreshness:
+        return CameraFreshness(
+            False,
+            self._waiting_reason(),
+            changed_fraction,
+            self._confirmation_frames,
+        )
+
+
 def _intersection_over_union(first: Detection, second: Detection) -> float:
     ax1, ay1, ax2, ay2 = first.box
     bx1, by1, bx2, by2 = second.box
@@ -1025,6 +1173,11 @@ def run(args) -> int:
     speaker = None
     narration_policy = None
     expanded_scene = None
+    camera_freshness = (
+        CameraFreshnessGuard()
+        if args.source in ("robomaster-app", "sdk")
+        else None
+    )
     publisher = ControlStatusPublisher(
         path=args.status_file,
         live=args.live,
@@ -1117,6 +1270,12 @@ def run(args) -> int:
             "loss stops immediately.".format(config.minimum_lock_frames),
             flush=True,
         )
+        if camera_freshness is not None:
+            print(
+                "Camera freshness interlock requires 3 changing frames and "
+                "stops a frozen stream.",
+                flush=True,
+            )
         start_s = time.monotonic()
 
         while True:
@@ -1139,7 +1298,12 @@ def run(args) -> int:
                 print("YOLO -> STOP: {}".format(current.reason), flush=True)
                 break
             last_frame_at = time.monotonic()
-            detections = tracker.track(frame)
+            freshness = (
+                camera_freshness.update(frame, now_s=last_frame_at)
+                if camera_freshness is not None
+                else CameraFreshness(True, "camera freshness not required")
+            )
+            detections = tracker.track(frame) if freshness.fresh else ()
             inference_done = time.monotonic()
             narration_only = ()
             elapsed = inference_done - last_loop_at if last_loop_at else 0.0
@@ -1147,7 +1311,9 @@ def run(args) -> int:
                 fps = 1.0 / elapsed
             last_loop_at = inference_done
 
-            if inference_done - last_frame_at > args.max_inference_seconds:
+            if not freshness.fresh:
+                current = follower.reset(freshness.reason)
+            elif inference_done - last_frame_at > args.max_inference_seconds:
                 current = follower.reset("inference stale - stopped")
             else:
                 current = follower.update(
@@ -1160,7 +1326,11 @@ def run(args) -> int:
                 GestureDecision("YOLO", current.reason, current.command)
             )
 
-            if speaker is not None and narration_policy is not None:
+            if (
+                freshness.fresh
+                and speaker is not None
+                and narration_policy is not None
+            ):
                 expanded_detections = ()
                 narration_ready = True
                 if expanded_scene is not None:

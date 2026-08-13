@@ -1,7 +1,10 @@
 import unittest
 from pathlib import Path
 
+import numpy as np
+
 from robomaster_gesture.yolo_follow import (
+    CameraFreshnessGuard,
     DEFAULT_EXPANDED_SCENE_MODEL,
     DEFAULT_PIPER_MODEL,
     Detection,
@@ -17,6 +20,77 @@ def detection(label="bottle", box=(270, 140, 370, 300), confidence=0.9, track_id
 
 
 class TargetFollowerTests(unittest.TestCase):
+    def test_camera_freshness_requires_consecutive_meaningful_changes(self):
+        guard = CameraFreshnessGuard(minimum_changed_frames=3)
+        frame = np.zeros((80, 120, 3), dtype=np.uint8)
+
+        self.assertFalse(guard.update(frame, now_s=0.0).fresh)
+        for index in range(1, 4):
+            frame = frame.copy()
+            frame[20:60, 30:90] = index * 10
+            result = guard.update(frame, now_s=index * 0.1)
+            self.assertEqual(index == 3, result.fresh)
+
+    def test_camera_freshness_rejects_tiny_ui_change(self):
+        guard = CameraFreshnessGuard(minimum_changed_frames=1)
+        frame = np.zeros((800, 1200, 3), dtype=np.uint8)
+        guard.update(frame, now_s=0.0)
+        changed = frame.copy()
+        changed[400, 600] = 255
+
+        result = guard.update(changed, now_s=0.1)
+
+        self.assertFalse(result.fresh)
+        self.assertIn("verifying", result.reason)
+
+    def test_camera_freshness_disarms_and_rearms_after_freeze(self):
+        guard = CameraFreshnessGuard(
+            minimum_changed_frames=2,
+            freeze_after_s=0.5,
+        )
+        base = np.zeros((80, 120, 3), dtype=np.uint8)
+        first = base.copy()
+        first[20:60, 30:90] = 10
+        second = base.copy()
+        second[20:60, 30:90] = 20
+        guard.update(base, now_s=0.0)
+        guard.update(first, now_s=0.1)
+        self.assertTrue(guard.update(second, now_s=0.2).fresh)
+        self.assertTrue(guard.update(second, now_s=0.4).fresh)
+
+        frozen = guard.update(second, now_s=0.8)
+        self.assertFalse(frozen.fresh)
+        self.assertIn("frozen", frozen.reason)
+
+        third = base.copy()
+        third[20:60, 30:90] = 30
+        fourth = base.copy()
+        fourth[20:60, 30:90] = 40
+        self.assertFalse(guard.update(third, now_s=0.9).fresh)
+        self.assertTrue(guard.update(fourth, now_s=1.0).fresh)
+
+    def test_camera_freshness_discards_partial_lock_after_freeze(self):
+        guard = CameraFreshnessGuard(
+            minimum_changed_frames=3,
+            freeze_after_s=0.5,
+        )
+        base = np.zeros((80, 120, 3), dtype=np.uint8)
+        changed = base.copy()
+        changed[20:60, 30:90] = 10
+        guard.update(base, now_s=0.0)
+        partial = guard.update(changed, now_s=0.1)
+        self.assertEqual(1, partial.confirmation_frames)
+
+        frozen = guard.update(changed, now_s=0.7)
+        self.assertFalse(frozen.fresh)
+        self.assertEqual(0, frozen.confirmation_frames)
+
+        changed_again = base.copy()
+        changed_again[20:60, 30:90] = 20
+        reacquiring = guard.update(changed_again, now_s=0.8)
+        self.assertFalse(reacquiring.fresh)
+        self.assertEqual(1, reacquiring.confirmation_frames)
+
     def test_default_expanded_scene_model_is_compact_prompt_free_yoloe(self):
         self.assertEqual(
             "yoloe-26n-seg-pf.pt", DEFAULT_EXPANDED_SCENE_MODEL.name
