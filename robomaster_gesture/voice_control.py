@@ -286,6 +286,14 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--yaw-speed", type=float, default=25.0)
     parser.add_argument("--duration", type=float, default=0.0)
     parser.add_argument("--live", action="store_true")
+    parser.add_argument(
+        "--connect-only",
+        action="store_true",
+        help=(
+            "verify the live robot transport, send STOP, and exit without "
+            "starting speech recognition"
+        ),
+    )
     parser.add_argument("--transport", choices=("sdk", "s1-app"), default="s1-app")
     parser.add_argument("--connection", choices=("ap", "sta", "rndis"), default="sta")
     parser.add_argument("--protocol", choices=("tcp", "udp"), default="tcp")
@@ -298,6 +306,12 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def _validate_args(args) -> None:
+    if args.connect_only and not args.live:
+        raise ValueError("--connect-only requires --live")
+    if args.connect_only and args.audio_file is not None:
+        raise ValueError("--connect-only cannot be combined with --audio-file")
+    if args.connect_only and args.list_recognizers:
+        raise ValueError("--connect-only cannot be combined with --list-recognizers")
     if not 0.0 <= args.min_confidence <= 1.0:
         raise ValueError("--min-confidence must be between 0 and 1")
     if not 0.10 <= args.command_duration <= 3.0:
@@ -332,12 +346,42 @@ def _list_recognizers() -> int:
     return int(completed.returncode)
 
 
+def _run_connect_only(args, robot) -> int:
+    controller_lease = ControllerLease()
+    try:
+        controller_lease.acquire()
+        robot.connect()
+        robot.stop()
+        connected_ip = getattr(robot, "connected_ip", None)
+        if args.transport == "s1-app":
+            print(
+                "Voice transport preflight passed: RoboMaster app input access "
+                "verified and W/A/S/D released. Speech recognition was not started. "
+                "This does not verify the app-to-robot radio link.",
+                flush=True,
+            )
+        else:
+            print(
+                "Voice transport preflight passed{}; STOP sent and speech "
+                "recognition was not started.".format(
+                    " at {}".format(connected_ip) if connected_ip else ""
+                ),
+                flush=True,
+            )
+        return 0
+    finally:
+        robot.close()
+        controller_lease.close()
+
+
 def run(args) -> int:
     _validate_args(args)
     if args.list_recognizers:
         return _list_recognizers()
 
     robot = _make_robot(args)
+    if args.connect_only:
+        return _run_connect_only(args, robot)
     pump = None
     controller_lease = None  # type: Optional[ControllerLease]
     recognizer = WindowsSpeechRecognizer(

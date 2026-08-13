@@ -1,5 +1,6 @@
 import unittest
 from pathlib import Path
+from unittest import mock
 
 import numpy as np
 
@@ -12,6 +13,7 @@ from robomaster_gesture.yolo_follow import (
     TargetFollower,
     _validate_args,
     build_parser,
+    run,
 )
 
 
@@ -20,6 +22,105 @@ def detection(label="bottle", box=(270, 140, 370, 300), confidence=0.9, track_id
 
 
 class TargetFollowerTests(unittest.TestCase):
+    def test_camera_check_rejects_live_or_unmounted_sources(self):
+        parser = build_parser()
+        for arguments in (
+            ("--camera-check", "--live"),
+            ("--camera-check", "--source", "webcam"),
+            ("--camera-check", "--speak"),
+        ):
+            with self.subTest(arguments=arguments), self.assertRaises(ValueError):
+                _validate_args(parser.parse_args(arguments))
+
+    def test_app_camera_check_never_starts_yolo_or_motion_adapter(self):
+        events = []
+        frames = []
+        for index in range(4):
+            frame = np.zeros((80, 120, 3), dtype=np.uint8)
+            frame[20:60, 30:90] = index * 10
+            frames.append(frame)
+
+        class FakeFrameSource:
+            def __init__(self, window_title):
+                events.append("source-create")
+                self.index = 0
+
+            def open(self):
+                events.append("source-open")
+
+            def read(self):
+                frame = frames[min(self.index, len(frames) - 1)]
+                self.index += 1
+                return frame
+
+            def close(self):
+                events.append("source-close")
+
+        def forbidden(*args, **kwargs):
+            raise AssertionError("YOLO or motion adapter started during camera check")
+
+        args = build_parser().parse_args(("--camera-check",))
+        with mock.patch(
+            "robomaster_gesture.yolo_follow.RoboMasterAppFrameSource",
+            FakeFrameSource,
+        ), mock.patch(
+            "robomaster_gesture.yolo_follow.UltralyticsTracker",
+            forbidden,
+        ), mock.patch(
+            "robomaster_gesture.yolo_follow._make_motion_adapter",
+            forbidden,
+        ):
+            self.assertEqual(0, run(args))
+
+        self.assertEqual(
+            ["source-create", "source-open", "source-close"],
+            events,
+        )
+
+    def test_app_camera_check_fails_closed_on_static_frames(self):
+        events = []
+        frame = np.zeros((80, 120, 3), dtype=np.uint8)
+
+        class StaticFrameSource:
+            def __init__(self, window_title):
+                pass
+
+            def open(self):
+                events.append("open")
+
+            def read(self):
+                return frame
+
+            def close(self):
+                events.append("close")
+
+        def forbidden(*args, **kwargs):
+            raise AssertionError("YOLO or motion adapter started during camera check")
+
+        args = build_parser().parse_args(
+            (
+                "--camera-check",
+                "--duration",
+                "0.05",
+                "--frame-interval",
+                "0.02",
+            )
+        )
+        with mock.patch(
+            "robomaster_gesture.yolo_follow.RoboMasterAppFrameSource",
+            StaticFrameSource,
+        ), mock.patch(
+            "robomaster_gesture.yolo_follow.UltralyticsTracker",
+            forbidden,
+        ), mock.patch(
+            "robomaster_gesture.yolo_follow._make_motion_adapter",
+            forbidden,
+        ):
+            with self.assertRaisesRegex(RuntimeError, "camera freshness"):
+                run(args)
+
+        self.assertEqual(["open", "close"], events)
+
     def test_camera_freshness_requires_consecutive_meaningful_changes(self):
         guard = CameraFreshnessGuard(minimum_changed_frames=3)
         frame = np.zeros((80, 120, 3), dtype=np.uint8)

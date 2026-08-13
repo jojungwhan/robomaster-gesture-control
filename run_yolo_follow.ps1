@@ -37,6 +37,7 @@ param(
     [string]$PiperPython,
     [string]$PiperModel,
     [double]$Duration = 0,
+    [switch]$CameraCheck,
     [switch]$NoPreview,
     [string]$RobotIp,
     [string]$LocalIp
@@ -86,6 +87,7 @@ if ($PiperPython) { $arguments += @('--piper-python', $PiperPython) }
 if ($PiperModel) { $arguments += @('--piper-model', $PiperModel) }
 if ($InputFile) { $arguments += @('--input-file', $InputFile) }
 if ($Duration -gt 0) { $arguments += @('--duration', $Duration) }
+if ($CameraCheck) { $arguments += '--camera-check' }
 if ($NoPreview) { $arguments += '--no-preview' }
 if ($RobotIp) { $arguments += @('--robot-ip', $RobotIp) }
 if ($LocalIp) { $arguments += @('--local-ip', $LocalIp) }
