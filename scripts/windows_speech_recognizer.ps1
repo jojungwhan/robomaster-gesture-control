@@ -76,7 +76,26 @@ try {
                 $result = $recognizer.Recognize(
                     [TimeSpan]::FromSeconds($InitialSilenceSeconds)
                 )
-            } catch [System.Speech.Recognition.InitialSilenceTimeoutException] {
+            } catch {
+                # PowerShell wraps exceptions raised by a .NET method call in
+                # MethodInvocationException.  After SpeechRecognitionEngine
+                # consumes a WAV file it detaches that input, so the next
+                # synchronous Recognize call reports "No audio input" through
+                # an inner InvalidOperationException.  Treat only that exact
+                # audio-file EOF condition as normal completion.  The exception
+                # message is localized by Windows, so its invariant .NET type
+                # and the known WAV-input mode are the reliable discriminator;
+                # microphone and other recognition failures still fail closed.
+                $exception = $_.Exception
+                while ($exception.InnerException) {
+                    $exception = $exception.InnerException
+                }
+                $isAudioFileEof = $AudioFile -and
+                    $exception -is [System.InvalidOperationException] -and
+                    ([string]$recognizer.AudioState -eq 'Stopped')
+                if (-not $isAudioFileEof) {
+                    throw
+                }
                 $result = $null
             }
             if ($null -ne $result) {
