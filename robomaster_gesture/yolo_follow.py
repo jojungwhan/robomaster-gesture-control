@@ -27,9 +27,11 @@ from .robot_adapter import (
 from .scene_speech import (
     PiperSceneSpeaker,
     SceneNarrationPolicy,
+    answer_object_query,
     describe_scene,
     is_look_query,
     merge_scene_detections,
+    parse_object_query,
 )
 from .voice_control import (
     DEFAULT_WHISPER_MODEL,
@@ -1013,6 +1015,40 @@ def _write_frame_atomically(path: Path, frame) -> None:
         pass
 
 
+def _read_describe_target(path: Path):
+    """Return the object label a describe request asks about, or "" for a general
+    "what do you see". The file is "<timestamp>\n<label>\n"; a missing or partial
+    second line means a general description."""
+    try:
+        lines = path.read_text(encoding="ascii").splitlines()
+    except OSError:
+        return ""
+    return lines[1].strip() if len(lines) >= 2 else ""
+
+
+def _scene_answer(target_label, detections, frame_width, maximum_groups) -> str:
+    """Spoken reply for a scene query: a targeted yes/no, or a full description."""
+    if target_label:
+        return answer_object_query(
+            target_label,
+            detections,
+            frame_width=max(1, int(frame_width)),
+            confidence=0.0,
+            maximum_groups=maximum_groups,
+        )
+    scene = describe_scene(
+        detections,
+        frame_width=max(1, int(frame_width)),
+        confidence=0.0,
+        maximum_groups=maximum_groups,
+    )
+    return (
+        scene.text
+        if scene is not None
+        else "I do not see any recognized objects right now."
+    )
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
@@ -1587,20 +1623,17 @@ def run(args) -> int:
             if recognizer is not None and speaker is not None:
                 event = recognizer.get(timeout_s=0.0)
                 while event is not None:
-                    if event.event == "recognized" and is_look_query(event.text):
-                        scene = describe_scene(
-                            last_scene_detections,
-                            frame_width=max(1, last_scene_frame_width),
-                            confidence=0.0,
-                            maximum_groups=args.speech_max_groups,
-                        )
-                        spoken = (
-                            scene.text
-                            if scene is not None
-                            else "I do not see any recognized objects right now."
-                        )
-                        speaker.speak(spoken)
-                        print("ROBOT SAYS: {}".format(spoken), flush=True)
+                    if event.event == "recognized":
+                        target = parse_object_query(event.text)
+                        if target is not None or is_look_query(event.text):
+                            spoken = _scene_answer(
+                                target,
+                                last_scene_detections,
+                                last_scene_frame_width,
+                                args.speech_max_groups,
+                            )
+                            speaker.speak(spoken)
+                            print("ROBOT SAYS: {}".format(spoken), flush=True)
                     elif event.event == "error":
                         print(
                             "WARNING: voice query recognizer error: {}".format(
@@ -1621,16 +1654,12 @@ def run(args) -> int:
                     request_mtime = None
                 if request_mtime is not None and request_mtime != describe_request_mtime:
                     describe_request_mtime = request_mtime
-                    scene = describe_scene(
+                    target_label = _read_describe_target(args.describe_request_file)
+                    spoken = _scene_answer(
+                        target_label,
                         last_scene_detections,
-                        frame_width=max(1, last_scene_frame_width),
-                        confidence=0.0,
-                        maximum_groups=args.speech_max_groups,
-                    )
-                    spoken = (
-                        scene.text
-                        if scene is not None
-                        else "I do not see any recognized objects right now."
+                        last_scene_frame_width,
+                        args.speech_max_groups,
                     )
                     speaker.speak(spoken)
                     print("ROBOT SAYS: {}".format(spoken), flush=True)

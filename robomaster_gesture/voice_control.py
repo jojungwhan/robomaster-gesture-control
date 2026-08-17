@@ -25,7 +25,7 @@ from .control_lease import ControlLeaseError, ControllerLease
 from .control_center import format_speech_transcript, stop_requested
 from .control_status import DEFAULT_CONTROL_STATUS_PATH, ControlStatusPublisher
 from .models import GestureDecision, VelocityCommand, translation_directions
-from .scene_speech import is_look_query
+from .scene_speech import is_look_query, parse_object_query
 from .robot_adapter import (
     CommandPump,
     CommandPumpConfig,
@@ -773,20 +773,36 @@ def run(args) -> int:
                         ),
                         flush=True,
                     )
-                    # A scene question ("what do you see") is not a movement: ask
-                    # the object-detection process to describe by touching its
-                    # request file, so one recognizer serves both.
-                    if args.describe_request_file is not None and is_look_query(
-                        event.text
+                    # A scene question is not a movement: ask the object-detection
+                    # process to answer by writing its request file, so one
+                    # recognizer serves both. A targeted "do you see a chair" sends
+                    # the object name (second line); a general "what do you see"
+                    # sends none.
+                    describe_target = (
+                        parse_object_query(event.text)
+                        if args.describe_request_file is not None
+                        else None
+                    )
+                    if args.describe_request_file is not None and (
+                        describe_target is not None or is_look_query(event.text)
                     ):
                         try:
                             args.describe_request_file.parent.mkdir(
                                 parents=True, exist_ok=True
                             )
                             args.describe_request_file.write_text(
-                                "{}\n".format(time.time()), encoding="ascii"
+                                "{}\n{}\n".format(
+                                    time.time(), describe_target or ""
+                                ),
+                                encoding="ascii",
                             )
-                            print("VOICE -> DESCRIBE SCENE", flush=True)
+                            if describe_target:
+                                print(
+                                    "VOICE -> LOOK FOR {}".format(describe_target),
+                                    flush=True,
+                                )
+                            else:
+                                print("VOICE -> DESCRIBE SCENE", flush=True)
                         except OSError as exc:
                             print(
                                 "Could not request a scene description: {}".format(
