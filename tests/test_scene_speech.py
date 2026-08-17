@@ -2,8 +2,11 @@ import unittest
 
 from robomaster_gesture.scene_speech import (
     SceneNarrationPolicy,
+    answer_object_query,
     describe_scene,
+    is_look_query,
     merge_scene_detections,
+    parse_object_query,
 )
 from robomaster_gesture.yolo_follow import Detection
 
@@ -123,6 +126,96 @@ class SceneNarrationPolicyTests(unittest.TestCase):
             "I do not see any recognized objects now.", policy.update(None, 3.0)
         )
         self.assertIsNone(policy.update(None, 4.0))
+
+
+class ObjectQueryParsingTests(unittest.TestCase):
+    def test_targeted_questions_return_the_canonical_label(self):
+        cases = {
+            "do you see a person": "person",
+            "Do you see any people?": "person",
+            "can you see a chair": "chair",
+            "is there a dog": "dog",
+            "do you see any bottles": "bottle",
+            "can you spot a laptop": "laptop",
+            "do you see my phone": "cell phone",
+            "look for a cup": "cup",
+        }
+        for phrase, label in cases.items():
+            with self.subTest(phrase=phrase):
+                self.assertEqual(label, parse_object_query(phrase))
+
+    def test_synonyms_and_furniture_aliases_map_to_reportable_labels(self):
+        self.assertEqual("couch", parse_object_query("do you see a sofa"))
+        self.assertEqual("television", parse_object_query("do you see a tv"))
+        self.assertEqual("table", parse_object_query("do you see a table"))
+        self.assertEqual("laptop", parse_object_query("do you see a computer"))
+
+    def test_general_and_movement_phrases_are_not_object_queries(self):
+        for phrase in (
+            "what do you see",
+            "tell me what you see",
+            "do you see anything",
+            "forward",
+            "turn left",
+            "stop",
+            "",
+        ):
+            with self.subTest(phrase=phrase):
+                self.assertIsNone(parse_object_query(phrase))
+
+    def test_general_look_queries_cover_more_phrasings(self):
+        for phrase in (
+            "do you see anything",
+            "can you see",
+            "describe the room",
+            "what are you looking at",
+            "what's around you",
+            "describe your surroundings",
+        ):
+            with self.subTest(phrase=phrase):
+                self.assertTrue(is_look_query(phrase))
+
+
+class ObjectQueryAnswerTests(unittest.TestCase):
+    def setUp(self):
+        self.detections = (
+            Detection("person", 0.92, (300, 100, 400, 500)),
+            Detection("chair", 0.81, (40, 200, 150, 480)),
+            Detection("tv", 0.85, (600, 100, 760, 300)),
+        )
+
+    def test_present_object_is_confirmed_with_location(self):
+        self.assertEqual(
+            "Yes, I see a person ahead.",
+            answer_object_query("person", self.detections, frame_width=800),
+        )
+
+    def test_alias_label_matches_detection_alias(self):
+        # "tv" detections canonicalize to "television".
+        self.assertEqual(
+            "Yes, I see a television on the right.",
+            answer_object_query("television", self.detections, frame_width=800),
+        )
+
+    def test_absent_object_is_denied(self):
+        self.assertEqual(
+            "No, I do not see a dog right now.",
+            answer_object_query("dog", self.detections, frame_width=800),
+        )
+        self.assertEqual(
+            "No, I do not see an elephant right now.",
+            answer_object_query("elephant", self.detections, frame_width=800),
+        )
+
+    def test_multiple_matches_are_counted(self):
+        detections = (
+            Detection("person", 0.9, (40, 0, 140, 400)),
+            Detection("person", 0.9, (300, 0, 400, 400)),
+        )
+        self.assertEqual(
+            "Yes, I see a person ahead and a person on the left.",
+            answer_object_query("person", detections, frame_width=600),
+        )
 
 
 if __name__ == "__main__":

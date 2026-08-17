@@ -11,6 +11,8 @@ from robomaster_gesture.yolo_follow import (
     Detection,
     FollowConfig,
     TargetFollower,
+    _read_describe_target,
+    _scene_answer,
     _validate_args,
     build_parser,
     is_look_query,
@@ -77,6 +79,60 @@ class LookQueryTests(unittest.TestCase):
             self.assertGreater(out.stat().st_size, 50)
             # The temp file is renamed away, never left behind.
             self.assertFalse((Path(temporary) / "frame.jpg.tmp").exists())
+
+
+class DescribeRequestTests(unittest.TestCase):
+    """The voice controller writes "<timestamp>\\n<label>\\n"; the detector reads
+    the optional label back to choose a targeted or a general answer."""
+
+    def _write(self, directory, payload):
+        path = Path(directory) / "describe_request.flag"
+        path.write_text(payload, encoding="ascii")
+        return path
+
+    def test_reads_targeted_label(self):
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as temporary:
+            path = self._write(temporary, "1723900000.5\nperson\n")
+            self.assertEqual("person", _read_describe_target(path))
+
+    def test_general_request_has_no_label(self):
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as temporary:
+            # A general "what do you see" writes only the timestamp line.
+            path = self._write(temporary, "1723900000.5\n\n")
+            self.assertEqual("", _read_describe_target(path))
+            timestamp_only = self._write(temporary, "1723900000.5\n")
+            self.assertEqual("", _read_describe_target(timestamp_only))
+
+    def test_missing_file_is_general(self):
+        self.assertEqual("", _read_describe_target(Path(r"C:\nope\missing.flag")))
+
+    def test_scene_answer_targeted_vs_general(self):
+        detections = (
+            Detection("person", 0.9, (300, 100, 400, 500)),
+            Detection("chair", 0.8, (40, 200, 150, 480)),
+        )
+        # Targeted label -> yes/no answer.
+        self.assertEqual(
+            "Yes, I see a person ahead.",
+            _scene_answer("person", detections, 800, 4),
+        )
+        self.assertEqual(
+            "No, I do not see a dog right now.",
+            _scene_answer("dog", detections, 800, 4),
+        )
+        # No label -> full description.
+        self.assertEqual(
+            "I see a person ahead and a chair on the left.",
+            _scene_answer("", detections, 800, 4),
+        )
+        self.assertEqual(
+            "I do not see any recognized objects right now.",
+            _scene_answer("", (), 800, 4),
+        )
 
 
 class TargetFollowerTests(unittest.TestCase):

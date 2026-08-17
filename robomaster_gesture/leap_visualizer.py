@@ -711,7 +711,10 @@ class ControlCenterWindow:
         )
         tk.Label(
             voice_left,
-            text="forward / back / left / right / stop  |  'what do you see'",
+            text=(
+                "forward / back / left / right / stop  |  "
+                "'what do you see'  |  'do you see a person?'"
+            ),
             fg=self.MUTED,
             bg="#0A1620",
             anchor="w",
@@ -2070,8 +2073,8 @@ class ControlCenterWindow:
             status_text = (
                 "OBJECT DETECTION  |  the S1 camera feed appears above once "
                 "models load (~15-55 s on CPU).\n"
-                "Start VOICE CONTROL and say 'what do you see' to hear it. Untick "
-                "OBJECT DETECTION to turn it off."
+                "Start VOICE CONTROL and say 'what do you see' or 'do you see a "
+                "chair?' to hear it. Untick OBJECT DETECTION to turn it off."
             )
             color = self.GOOD
         self._set_controller_status(status_text, color)

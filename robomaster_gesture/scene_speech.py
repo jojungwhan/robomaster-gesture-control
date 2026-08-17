@@ -14,23 +14,40 @@ import time
 from typing import Optional, Sequence, Tuple
 
 
-# Deterministic phrases that ask the robot to describe what it currently sees.
+# Deterministic phrases that ask the robot to describe everything it sees.
+# Matched as substrings against the letters-only, space-joined transcript, so a
+# contraction like "what's" is compared as "what s".
 _LOOK_QUERY_PHRASES = (
     "what do you see",
     "what can you see",
+    "what do you observe",
+    "what are you looking at",
     "tell me what you see",
+    "tell me what you can see",
+    "tell me what is in front of you",
     "what are you seeing",
     "what you see",
+    "do you see",
+    "can you see",
+    "see anything",
     "describe what you see",
     "describe the scene",
+    "describe the room",
+    "describe the view",
+    "describe your surroundings",
+    "your surroundings",
     "what is in front of you",
+    "what s in front of you",
+    "in front of you",
     "what is around you",
+    "what s around you",
+    "around you",
     "look around",
 )
 
 
 def is_look_query(text: str) -> bool:
-    """Return whether a phrase asks the robot to describe the current scene."""
+    """Return whether a phrase asks the robot to describe the whole scene."""
     joined = " ".join(re.findall(r"[a-z]+", str(text).casefold()))
     return any(phrase in joined for phrase in _LOOK_QUERY_PHRASES)
 
@@ -73,6 +90,183 @@ SCENE_LABEL_ALIASES = {
     "tv": "television",
     "potted plant": "plant",
 }
+
+
+# Detectable object vocabulary. The primary detector is a COCO-trained YOLO
+# model, so those 80 class names are the base vocabulary; SCENE_LABEL_ALIASES
+# (below) adds the expanded-scene furniture names. Kept as a literal because the
+# spoken-query parser must know the names without loading a model.
+_COCO_LABELS = frozenset(
+    (
+        "person", "bicycle", "car", "motorcycle", "airplane", "bus", "train",
+        "truck", "boat", "traffic light", "fire hydrant", "stop sign",
+        "parking meter", "bench", "bird", "cat", "dog", "horse", "sheep",
+        "cow", "elephant", "bear", "zebra", "giraffe", "backpack", "umbrella",
+        "handbag", "tie", "suitcase", "frisbee", "skis", "snowboard",
+        "sports ball", "kite", "baseball bat", "baseball glove", "skateboard",
+        "surfboard", "tennis racket", "bottle", "wine glass", "cup", "fork",
+        "knife", "spoon", "bowl", "banana", "apple", "sandwich", "orange",
+        "broccoli", "carrot", "hot dog", "pizza", "donut", "cake", "chair",
+        "couch", "potted plant", "bed", "dining table", "toilet", "tv",
+        "laptop", "mouse", "remote", "keyboard", "cell phone", "microwave",
+        "oven", "toaster", "sink", "refrigerator", "book", "clock", "vase",
+        "scissors", "teddy bear", "hair drier", "toothbrush",
+    )
+)
+
+# Spoken word (already singularized) -> canonical object label. Covers everyday
+# synonyms the detector's own class names do not use.
+_OBJECT_SYNONYMS = {
+    "people": "person",
+    "human": "person",
+    "man": "person",
+    "woman": "person",
+    "lady": "person",
+    "guy": "person",
+    "boy": "person",
+    "girl": "person",
+    "someone": "person",
+    "somebody": "person",
+    "anyone": "person",
+    "anybody": "person",
+    "sofa": "couch",
+    "settee": "couch",
+    "television": "television",
+    "telly": "television",
+    "screen": "television",
+    "monitor": "monitor",
+    "computer": "laptop",
+    "notebook": "laptop",
+    "phone": "cell phone",
+    "cellphone": "cell phone",
+    "smartphone": "cell phone",
+    "mobile": "cell phone",
+    "plant": "plant",
+    "flower": "plant",
+    "puppy": "dog",
+    "kitten": "cat",
+    "mug": "cup",
+    "glasses": "cup",
+    "purse": "handbag",
+    "bag": "handbag",
+    "pack": "backpack",
+    "rucksack": "backpack",
+}
+
+# Phrases that mark a question about a specific object rather than a movement.
+_OBJECT_QUERY_TRIGGERS = (
+    "do you see",
+    "can you see",
+    "are you seeing",
+    "you see any",
+    "do you notice",
+    "can you find",
+    "do you find",
+    "can you spot",
+    "do you spot",
+    "is there",
+    "are there",
+    "look for",
+    "any sign of",
+)
+
+# Words to skip when picking the object noun out of a query.
+_QUERY_STOPWORDS = frozenset(
+    (
+        "a", "an", "the", "any", "some", "my", "your", "there", "here", "now",
+        "please", "in", "front", "of", "around", "room", "view", "scene",
+        "anywhere", "nearby", "at", "all", "you", "still", "currently",
+        "right", "over", "near", "close", "by", "and", "or",
+    )
+)
+
+# Everything the parser will accept as an object name.
+_OBJECT_VOCABULARY = (
+    _COCO_LABELS
+    | set(SCENE_LABEL_ALIASES)
+    | set(SCENE_LABEL_ALIASES.values())
+    | set(_OBJECT_SYNONYMS)
+)
+
+
+def _singularize(word: str) -> str:
+    if word.endswith("ies") and len(word) > 4:
+        return word[:-3] + "y"
+    if word.endswith(("ses", "xes", "zes", "ches", "shes")):
+        return word[:-2]
+    if word.endswith("s") and not word.endswith("ss") and len(word) > 3:
+        return word[:-1]
+    return word
+
+
+def _singularize_phrase(phrase: str) -> str:
+    words = phrase.split()
+    if not words:
+        return phrase
+    words[-1] = _singularize(words[-1])
+    return " ".join(words)
+
+
+def _match_object_label(phrase: str):
+    for candidate in (phrase, _singularize_phrase(phrase)):
+        if not candidate or candidate in _QUERY_STOPWORDS:
+            continue
+        if candidate in _OBJECT_SYNONYMS:
+            return _OBJECT_SYNONYMS[candidate]
+        if candidate in _OBJECT_VOCABULARY:
+            return canonical_scene_label(candidate)
+    return None
+
+
+def parse_object_query(text: str):
+    """Return the canonical label a "do you see a ..." question asks about.
+
+    Returns None when the phrase is not a targeted object question (e.g. a
+    movement command, or a general "what do you see"), so callers can fall back
+    to :func:`is_look_query` and then to movement parsing.
+    """
+    words = re.findall(r"[a-z]+", str(text).casefold())
+    if not words:
+        return None
+    joined = " ".join(words)
+    if not any(trigger in joined for trigger in _OBJECT_QUERY_TRIGGERS):
+        return None
+    count = len(words)
+    for size in (3, 2, 1):
+        for start in range(0, count - size + 1):
+            label = _match_object_label(" ".join(words[start : start + size]))
+            if label is not None:
+                return label
+    return None
+
+
+def answer_object_query(
+    label: str,
+    detections: Sequence,
+    frame_width: int,
+    confidence: float = 0.0,
+    maximum_groups: int = 4,
+) -> str:
+    """Answer "do you see a <label>" with a yes/no sentence and, if yes, where."""
+    canonical = canonical_scene_label(label)
+    matching = [
+        item
+        for item in detections
+        if canonical_scene_label(item.label) == canonical
+        and float(item.confidence) >= confidence
+    ]
+    if not matching:
+        article = "an" if canonical[:1] in "aeiou" else "a"
+        return "No, I do not see {} {} right now.".format(article, canonical)
+    scene = describe_scene(
+        matching,
+        frame_width=max(1, int(frame_width)),
+        confidence=confidence,
+        maximum_groups=maximum_groups,
+    )
+    if scene is None:
+        return "Yes, I can see {}.".format(_spoken_count(canonical, len(matching)))
+    return "Yes, {}".format(scene.text)
 
 
 @dataclass(frozen=True)
