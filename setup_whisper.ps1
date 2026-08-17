@@ -7,7 +7,11 @@ param(
     [ValidateSet('tiny.en', 'base.en', 'small.en', 'large-v3-turbo')]
     [string]$Model = 'base.en',
     [switch]$Recreate,
-    [switch]$TestModel
+    [switch]$TestModel,
+    # Install the CUDA runtime libraries Faster Whisper (CTranslate2) needs for
+    # GPU inference. Requires an NVIDIA GPU. Without this, Whisper runs on the
+    # CPU. The recognizer picks the GPU automatically once these are present.
+    [switch]$Gpu
 )
 
 $ErrorActionPreference = 'Stop'
@@ -105,6 +109,14 @@ if (-not (Test-Path -LiteralPath $pythonCommand)) {
 & $pythonCommand -m pip install -r (Join-Path $PSScriptRoot 'requirements-whisper.txt')
 if ($LASTEXITCODE -ne 0) { throw 'Local Whisper installation failed.' }
 
+if ($Gpu) {
+    # CTranslate2 loads cuBLAS and cuDNN 9 at runtime for CUDA inference; the
+    # pip packages ship those DLLs so no system CUDA toolkit install is needed.
+    Write-Host 'Installing CUDA runtime libraries (cuBLAS + cuDNN) for GPU Whisper...'
+    & $pythonCommand -m pip install 'nvidia-cublas-cu12' 'nvidia-cudnn-cu12==9.*'
+    if ($LASTEXITCODE -ne 0) { throw 'CUDA runtime library installation failed.' }
+}
+
 New-Item -ItemType Directory -Force -Path $modelDirectory | Out-Null
 
 function Install-WhisperModelFile {
@@ -138,9 +150,14 @@ foreach ($modelFile in $modelFiles) {
 if ($LASTEXITCODE -ne 0) { throw 'Could not import the local Whisper packages.' }
 
 if ($TestModel) {
-    $testCode = "from faster_whisper import WhisperModel; import sys; WhisperModel(sys.argv[1], device='cpu', compute_type='int8', local_files_only=True); print('Whisper model loaded successfully.')"
-    & $pythonCommand -c $testCode $modelDirectory
-    if ($LASTEXITCODE -ne 0) { throw 'The local Whisper model could not be loaded.' }
+    if ($Gpu) {
+        $testDevice = 'cuda'; $testCompute = 'float16'
+    } else {
+        $testDevice = 'cpu'; $testCompute = 'int8'
+    }
+    $testCode = "from faster_whisper import WhisperModel; import sys; WhisperModel(sys.argv[1], device=sys.argv[2], compute_type=sys.argv[3], local_files_only=True); print('Whisper model loaded on ' + sys.argv[2] + '.')"
+    & $pythonCommand -c $testCode $modelDirectory $testDevice $testCompute
+    if ($LASTEXITCODE -ne 0) { throw "The local Whisper model could not be loaded on $testDevice." }
 }
 
 Write-Host "Local Whisper $Model is ready. Choose it in the Control Center's VOICE model menu."
@@ -149,4 +166,9 @@ switch ($Model) {
     'base.en' { Write-Host 'The Control Center uses this responsive English model by default.' }
     'small.en' { Write-Host 'More accurate but slower; usable live on faster CPUs.' }
     default { Write-Host 'Most accurate; too delayed for live movement on most CPUs.' }
+}
+if ($Gpu) {
+    Write-Host 'GPU runtime installed. The recognizer uses the GPU automatically (device auto).'
+} else {
+    Write-Host 'CPU build. Re-run with -Gpu on a machine with an NVIDIA GPU for near-instant transcription.'
 }

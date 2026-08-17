@@ -1069,7 +1069,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--tracker", default="bytetrack.yaml")
     parser.add_argument("--confidence", type=float, default=0.35)
     parser.add_argument("--image-size", type=int, default=416)
-    parser.add_argument("--device", default="cpu")
+    # auto = GPU (cuda:0) when a CUDA build of torch sees one, else CPU. Accepts
+    # an explicit ultralytics device too ("cpu", "0", "cuda:0").
+    parser.add_argument("--device", default="auto")
     parser.add_argument("--minimum-lock-frames", type=int, default=3)
     parser.add_argument("--center-deadzone", type=float, default=0.12)
     parser.add_argument("--stop-height", type=float, default=0.38)
@@ -1470,11 +1472,14 @@ def run(args) -> int:
             GestureDecision("YOLO", current.reason, current.command), force=True
         )
         print(
-            "{} YOLO follow; source={}, target={!r}, model={}.".format(
+            "{} YOLO follow; source={}, target={!r}, model={}, device={}.".format(
                 "LIVE ROBOT" if args.live else "DRY RUN",
                 args.source,
                 args.target,
                 args.model,
+                "GPU (cuda:{})".format(args.device)
+                if args.device not in ("cpu",)
+                else "CPU",
             ),
             flush=True,
         )
@@ -1745,9 +1750,36 @@ def _make_process_dpi_aware() -> None:
             pass
 
 
+def _torch_cuda_available() -> bool:
+    """True when a CUDA-enabled torch can see a GPU."""
+    try:
+        import torch
+
+        return bool(torch.cuda.is_available())
+    except Exception:
+        return False
+
+
+def _resolve_torch_device(requested: str) -> str:
+    """Resolve --device to a concrete Ultralytics device string.
+
+    "auto" selects the first CUDA GPU when a CUDA-enabled torch sees one, else
+    the CPU. Explicit values ("cpu", "0", "cuda:0") pass straight through.
+    """
+    requested = (requested or "auto").strip().lower()
+    if requested in ("auto", "gpu", "cuda"):
+        if _torch_cuda_available():
+            return "0"
+        # "cuda"/"gpu" were explicit; honor the request so a misconfigured GPU
+        # surfaces an error instead of silently running on the CPU.
+        return "cpu" if requested == "auto" else requested
+    return requested
+
+
 def main(argv: Sequence[str] = None) -> int:
     _make_process_dpi_aware()
     args = build_parser().parse_args(argv)
+    args.device = _resolve_torch_device(args.device)
     try:
         return run(args)
     except (ValueError, ControlLeaseError, RuntimeError, RobotError) as exc:

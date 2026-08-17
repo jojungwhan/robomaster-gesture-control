@@ -12,6 +12,7 @@ from robomaster_gesture.yolo_follow import (
     FollowConfig,
     TargetFollower,
     _read_describe_target,
+    _resolve_torch_device,
     _scene_answer,
     _validate_args,
     build_parser,
@@ -79,6 +80,38 @@ class LookQueryTests(unittest.TestCase):
             self.assertGreater(out.stat().st_size, 50)
             # The temp file is renamed away, never left behind.
             self.assertFalse((Path(temporary) / "frame.jpg.tmp").exists())
+
+
+class DeviceResolutionTests(unittest.TestCase):
+    def test_device_flag_defaults_to_auto(self):
+        args = build_parser().parse_args(("--source", "webcam"))
+        self.assertEqual("auto", args.device)
+
+    def test_explicit_devices_pass_through(self):
+        for value in ("cpu", "0", "cuda:0"):
+            with self.subTest(value=value):
+                self.assertEqual(value, _resolve_torch_device(value))
+
+    def test_auto_prefers_gpu_when_available_else_cpu(self):
+        with mock.patch(
+            "robomaster_gesture.yolo_follow._torch_cuda_available",
+            return_value=True,
+        ):
+            self.assertEqual("0", _resolve_torch_device("auto"))
+        with mock.patch(
+            "robomaster_gesture.yolo_follow._torch_cuda_available",
+            return_value=False,
+        ):
+            self.assertEqual("cpu", _resolve_torch_device("auto"))
+
+    def test_explicit_cuda_is_honored_even_without_detection(self):
+        # An explicit request should surface a GPU error rather than silently
+        # dropping to the CPU.
+        with mock.patch(
+            "robomaster_gesture.yolo_follow._torch_cuda_available",
+            return_value=False,
+        ):
+            self.assertEqual("cuda", _resolve_torch_device("cuda"))
 
 
 class DescribeRequestTests(unittest.TestCase):

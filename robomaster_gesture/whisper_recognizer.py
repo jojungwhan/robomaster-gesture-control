@@ -112,31 +112,76 @@ def _transcribe(model, audio, captured_at_s: float) -> None:
     )
 
 
-def _load_model(args):
+def _cuda_is_available() -> bool:
+    """True when CTranslate2 (Faster Whisper's backend) can see a CUDA GPU."""
+    try:
+        import ctranslate2
+
+        return ctranslate2.get_cuda_device_count() > 0
+    except Exception:
+        return False
+
+
+def _resolve_whisper_device(requested: str):
+    """Map a requested device to a (device, compute_type) pair for Whisper.
+
+    "auto" uses the GPU when one is visible, else the CPU. GPU inference uses
+    float16; CPU uses int8, which is fastest there.
+    """
+    requested = (requested or "auto").strip().lower()
+    if requested == "cpu":
+        return "cpu", "int8"
+    if requested == "cuda":
+        return "cuda", "float16"
+    # auto
+    return ("cuda", "float16") if _cuda_is_available() else ("cpu", "int8")
+
+
+def _new_whisper_model(model_path, device, compute_type, cpu_threads):
     from faster_whisper import WhisperModel
 
+    return WhisperModel(
+        str(model_path),
+        device=device,
+        compute_type=compute_type,
+        cpu_threads=max(1, int(cpu_threads)),
+        num_workers=1,
+        local_files_only=True,
+    )
+
+
+def _load_model(args):
     model_path = Path(args.model)
     if not model_path.is_dir():
         raise RuntimeError(
             "Local Whisper model was not found: {}. Run setup_whisper.ps1."
             .format(model_path)
         )
+    device, compute_type = _resolve_whisper_device(getattr(args, "device", "auto"))
     _write_event(
         {
             "event": "status",
-            "message": "Loading local Whisper {} on CPU...".format(
-                args.model_name
+            "message": "Loading local Whisper {} on {}...".format(
+                args.model_name, device.upper()
             ),
         }
     )
-    return WhisperModel(
-        str(model_path),
-        device="cpu",
-        compute_type="int8",
-        cpu_threads=max(1, int(args.cpu_threads)),
-        num_workers=1,
-        local_files_only=True,
-    )
+    try:
+        return _new_whisper_model(model_path, device, compute_type, args.cpu_threads)
+    except Exception as exc:
+        # A machine may report a GPU but lack the CUDA runtime libraries; fall
+        # back to the CPU so voice control still works.
+        if device != "cpu":
+            _write_event(
+                {
+                    "event": "status",
+                    "message": "GPU load failed ({}); using CPU instead.".format(
+                        exc
+                    ),
+                }
+            )
+            return _new_whisper_model(model_path, "cpu", "int8", args.cpu_threads)
+        raise
 
 
 def _run_audio_file(args, model) -> int:
@@ -332,6 +377,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--model-name", default=DEFAULT_MODEL_NAME)
     parser.add_argument("--audio-file")
     parser.add_argument("--input-device")
+    # auto = GPU when present, else CPU. Force with cpu/cuda.
+    parser.add_argument(
+        "--device", choices=("auto", "cpu", "cuda"), default="auto"
+    )
     parser.add_argument("--cpu-threads", type=int, default=12)
     parser.add_argument("--duration", type=float, default=0.0)
     parser.add_argument("--speech-threshold", type=float, default=0.003)
