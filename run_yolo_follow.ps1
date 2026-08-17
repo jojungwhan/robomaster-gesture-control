@@ -24,6 +24,7 @@ param(
     [double]$PersonStopConfidence = 0.30,
     [double]$MaxInferenceSeconds = 1.50,
     [switch]$Speak,
+    [switch]$VoiceDescribe,
     [double]$SpeechConfidence = 0.45,
     [int]$SpeechStableFrames = 3,
     [double]$SpeechRepeatSeconds = 12.0,
@@ -81,6 +82,7 @@ $arguments = @(
 )
 if ($Live) { $arguments += '--live' }
 if ($Speak) { $arguments += '--speak' }
+if ($VoiceDescribe) { $arguments += '--voice-describe' }
 if ($BasicSceneOnly) { $arguments += '--basic-scene-only' }
 if ($ExpandedSceneModel) { $arguments += @('--expanded-scene-model', $ExpandedSceneModel) }
 if ($PiperPython) { $arguments += @('--piper-python', $PiperPython) }

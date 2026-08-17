@@ -19,14 +19,15 @@ class GestureState(str, Enum):
 class GestureConfig:
     preferred_hand: str = "right"
     minimum_visible_s: float = 0.30
-    open_hold_s: float = 0.35
-    arm_hold_s: float = 0.35
-    pinch_engage: float = 0.80
-    pinch_release: float = 0.55
+    open_hold_s: float = 0.25
+    arm_hold_s: float = 0.20
+    pinch_engage: float = 0.60
+    pinch_release: float = 0.35
+    pinch_distance_engage_mm: float = 32.0
+    pinch_distance_release_mm: float = 45.0
     open_pinch_max: float = 0.35
-    open_grab_max: float = 0.25
-    fist_grab_min: float = 0.85
-    pinch_grab_max: float = 0.70
+    open_grab_max: float = 0.40
+    fist_grab_min: float = 0.95
     translation_deadzone_mm: float = 25.0
     translation_full_scale_mm: float = 120.0
     yaw_deadzone_deg: float = 10.0
@@ -43,6 +44,12 @@ class GestureConfig:
             raise ValueError("preferred_hand must be right, left, or any")
         if not 0.0 <= self.pinch_release < self.pinch_engage <= 1.0:
             raise ValueError("pinch thresholds must have release < engage")
+        if not (
+            0.0 < self.pinch_distance_engage_mm < self.pinch_distance_release_mm
+        ):
+            raise ValueError(
+                "pinch distance thresholds must have engage < release"
+            )
         if self.translation_full_scale_mm <= self.translation_deadzone_mm:
             raise ValueError("translation full scale must exceed its deadzone")
         if self.yaw_full_scale_deg <= self.yaw_deadzone_deg:
@@ -127,7 +134,20 @@ class GestureController:
     def _is_engaged_pinch(self, hand: HandSample) -> bool:
         return (
             hand.pinch_strength >= self.config.pinch_engage
-            and hand.grab_strength <= self.config.pinch_grab_max
+            or (
+                0.0 < hand.pinch_distance_mm
+                <= self.config.pinch_distance_engage_mm
+            )
+        )
+
+    def _is_released_pinch(self, hand: HandSample) -> bool:
+        distance_is_open = (
+            hand.pinch_distance_mm <= 0.0
+            or hand.pinch_distance_mm > self.config.pinch_distance_release_mm
+        )
+        return (
+            hand.pinch_strength < self.config.pinch_release
+            and distance_is_open
         )
 
     def _update_waiting(self, hand: HandSample, now_s: float) -> GestureDecision:
@@ -165,10 +185,8 @@ class GestureController:
     def _update_arming(self, hand: HandSample, now_s: float) -> GestureDecision:
         if hand.hand_id != self._active_hand_id:
             return self._stop(now_s, "hand identity changed - stopped", hand)
-        if hand.pinch_strength < self.config.pinch_release:
+        if self._is_released_pinch(hand):
             return self._stop(now_s, "pinch released before engage", hand)
-        if hand.grab_strength > self.config.pinch_grab_max:
-            return self._stop(now_s, "pinch became ambiguous - stopped", hand)
 
         self._append_anchor_sample(hand)
         elapsed = now_s - self._arming_since
@@ -185,10 +203,8 @@ class GestureController:
     def _update_driving(self, hand: HandSample, now_s: float) -> GestureDecision:
         if hand.hand_id != self._active_hand_id:
             return self._stop(now_s, "hand identity changed - stopped", hand)
-        if hand.pinch_strength < self.config.pinch_release:
+        if self._is_released_pinch(hand):
             return self._stop(now_s, "pinch released - stopped", hand)
-        if hand.grab_strength > self.config.pinch_grab_max:
-            return self._stop(now_s, "pose ambiguous - stopped", hand)
 
         forward_mm = -(hand.palm_z_mm - self._anchor_z_mm)
         right_mm = (hand.palm_x_mm - self._anchor_x_mm) * self.config.strafe_sign

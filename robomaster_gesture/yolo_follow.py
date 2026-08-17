@@ -7,6 +7,7 @@ from dataclasses import dataclass
 import math
 import os
 from pathlib import Path
+import re
 import sys
 import time
 from typing import Optional, Sequence, Tuple
@@ -27,7 +28,13 @@ from .scene_speech import (
     PiperSceneSpeaker,
     SceneNarrationPolicy,
     describe_scene,
+    is_look_query,
     merge_scene_detections,
+)
+from .voice_control import (
+    DEFAULT_WHISPER_MODEL,
+    DEFAULT_WHISPER_PYTHON,
+    WhisperSpeechRecognizer,
 )
 
 
@@ -971,6 +978,41 @@ def annotate_frame(
     return annotated
 
 
+def _write_frame_atomically(path: Path, frame) -> None:
+    """Publish the latest annotated frame; a reader never sees a partial file.
+
+    Used to embed the preview inside the RoboMaster Control Center, which runs a
+    different Python and reads this JPEG instead of showing the pop-up window.
+    """
+    import cv2
+
+    # The captured frame can be very large (full app window on a high-DPI
+    # display); the embedded panel only needs a modest size, so downscale for the
+    # feed. YOLO already ran on its own (letterboxed) input, so this is display
+    # only.
+    height, width = frame.shape[:2]
+    max_width = 960
+    if width > max_width:
+        scale = max_width / float(width)
+        frame = cv2.resize(
+            frame,
+            (max_width, max(1, int(round(height * scale)))),
+            interpolation=cv2.INTER_AREA,
+        )
+    # Encode by format string, not by the temp file's extension, then write the
+    # bytes and rename so a reader never observes a half-written JPEG.
+    ok, buffer = cv2.imencode(".jpg", frame, [int(cv2.IMWRITE_JPEG_QUALITY), 80])
+    if not ok:
+        return
+    temporary = Path(str(path) + ".tmp")
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temporary.write_bytes(buffer.tobytes())
+        os.replace(str(temporary), str(path))
+    except OSError:
+        pass
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
@@ -1017,9 +1059,35 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--no-preview", action="store_true")
     parser.add_argument(
+        "--frame-out",
+        type=Path,
+        default=None,
+        help="write each annotated frame to this JPEG so the Control Center can "
+        "embed the view instead of showing the pop-up window",
+    )
+    parser.add_argument(
         "--speak",
         action="store_true",
         help="describe recognized objects aloud with local Piper neural TTS",
+    )
+    parser.add_argument(
+        "--voice-describe",
+        action="store_true",
+        help=(
+            "listen for 'tell me what you see' and speak the current scene on "
+            "demand (uses the microphone and Piper TTS)"
+        ),
+    )
+    parser.add_argument("--whisper-python", type=Path, default=DEFAULT_WHISPER_PYTHON)
+    parser.add_argument("--whisper-model", type=Path, default=DEFAULT_WHISPER_MODEL)
+    parser.add_argument("--whisper-model-name", default="base.en")
+    parser.add_argument(
+        "--describe-request-file",
+        type=Path,
+        default=None,
+        help="describe the current scene aloud whenever this file is touched, "
+        "so a single external recognizer can drive both movement and scene "
+        "queries without a second microphone listener",
     )
     parser.add_argument("--speech-confidence", type=float, default=0.45)
     parser.add_argument("--speech-stable-frames", type=int, default=3)
@@ -1226,7 +1294,12 @@ def run(args) -> int:
         return _run_camera_check(args)
     follower = TargetFollower(config)
     inference_confidence = min(args.confidence, args.person_stop_confidence)
-    if args.speak:
+    describe_scene_enabled = (
+        args.speak
+        or args.voice_describe
+        or args.describe_request_file is not None
+    )
+    if describe_scene_enabled:
         inference_confidence = min(inference_confidence, args.speech_confidence)
     tracker = UltralyticsTracker(
         model_name=args.model,
@@ -1241,7 +1314,7 @@ def run(args) -> int:
             and args.input_file.suffix.casefold()
             in {".bmp", ".jpg", ".jpeg", ".png", ".webp"}
         ),
-        describe_all=args.speak,
+        describe_all=describe_scene_enabled,
     )
     motion_adapter = _make_motion_adapter(args)
     frame_source = None
@@ -1252,6 +1325,15 @@ def run(args) -> int:
     speaker = None
     narration_policy = None
     expanded_scene = None
+    recognizer = None
+    last_scene_detections = ()  # type: Sequence[Detection]
+    last_scene_frame_width = 0
+    describe_request_mtime = None
+    if args.describe_request_file is not None:
+        try:
+            describe_request_mtime = args.describe_request_file.stat().st_mtime
+        except OSError:
+            describe_request_mtime = None
     camera_freshness = (
         CameraFreshnessGuard()
         if args.source in ("robomaster-app", "sdk")
@@ -1276,22 +1358,38 @@ def run(args) -> int:
         motion_adapter.connect()
         frame_source, camera_adapter = _make_frame_source(args, motion_adapter)
         frame_source.open()
-        if args.speak:
+        if describe_scene_enabled:
             speaker = PiperSceneSpeaker(
                 python_executable=args.piper_python,
                 worker=args.piper_worker,
                 model=args.piper_model,
             )
             speaker.start()
+            print(
+                "English scene speech enabled with Piper voice {}.".format(
+                    args.piper_model.stem
+                ),
+                flush=True,
+            )
+        if args.voice_describe:
+            recognizer = WhisperSpeechRecognizer(
+                python_executable=args.whisper_python,
+                model=args.whisper_model,
+                model_name=args.whisper_model_name,
+            )
+            recognizer.start()
+            print(
+                "Voice scene queries enabled: say 'tell me what you see'.",
+                flush=True,
+            )
+        if args.speak:
             narration_policy = SceneNarrationPolicy(
                 stable_frames=args.speech_stable_frames,
                 repeat_seconds=args.speech_repeat_seconds,
                 clear_seconds=args.speech_clear_seconds,
             )
             print(
-                "English scene narration enabled with Piper voice {}.".format(
-                    args.piper_model.stem
-                ),
+                "Continuous scene narration enabled.",
                 flush=True,
             )
             if not args.basic_scene_only:
@@ -1385,6 +1483,13 @@ def run(args) -> int:
             detections = tracker.track(frame) if freshness.fresh else ()
             inference_done = time.monotonic()
             narration_only = ()
+            if freshness.fresh:
+                last_scene_detections = tuple(
+                    item
+                    for item in detections
+                    if item.confidence >= args.speech_confidence
+                )
+                last_scene_frame_width = int(frame.shape[1])
             elapsed = inference_done - last_loop_at if last_loop_at else 0.0
             if elapsed > 0.0:
                 fps = 1.0 / elapsed
@@ -1477,6 +1582,59 @@ def run(args) -> int:
                         expanded_scene.close()
                         expanded_scene = None
 
+            # On-demand: answer "tell me what you see" by describing the latest
+            # detections aloud, independent of the continuous narration policy.
+            if recognizer is not None and speaker is not None:
+                event = recognizer.get(timeout_s=0.0)
+                while event is not None:
+                    if event.event == "recognized" and is_look_query(event.text):
+                        scene = describe_scene(
+                            last_scene_detections,
+                            frame_width=max(1, last_scene_frame_width),
+                            confidence=0.0,
+                            maximum_groups=args.speech_max_groups,
+                        )
+                        spoken = (
+                            scene.text
+                            if scene is not None
+                            else "I do not see any recognized objects right now."
+                        )
+                        speaker.speak(spoken)
+                        print("ROBOT SAYS: {}".format(spoken), flush=True)
+                    elif event.event == "error":
+                        print(
+                            "WARNING: voice query recognizer error: {}".format(
+                                event.message
+                            ),
+                            file=sys.stderr,
+                            flush=True,
+                        )
+                    event = recognizer.get(timeout_s=0.0)
+
+            # External trigger: a single shared recognizer (the voice controller)
+            # touches this file when it hears "what do you see", so scene queries
+            # need no second microphone listener here.
+            if args.describe_request_file is not None and speaker is not None:
+                try:
+                    request_mtime = args.describe_request_file.stat().st_mtime
+                except OSError:
+                    request_mtime = None
+                if request_mtime is not None and request_mtime != describe_request_mtime:
+                    describe_request_mtime = request_mtime
+                    scene = describe_scene(
+                        last_scene_detections,
+                        frame_width=max(1, last_scene_frame_width),
+                        confidence=0.0,
+                        maximum_groups=args.speech_max_groups,
+                    )
+                    spoken = (
+                        scene.text
+                        if scene is not None
+                        else "I do not see any recognized objects right now."
+                    )
+                    speaker.speak(spoken)
+                    print("ROBOT SAYS: {}".format(spoken), flush=True)
+
             signature = (current.state, current.reason, translation_directions(current.command))
             if signature != last_signature:
                 movement = " + ".join(signature[2]) if signature[2] else "STOP"
@@ -1488,18 +1646,20 @@ def run(args) -> int:
                 )
                 last_signature = signature
 
-            if preview is not None:
-                preview.show(
-                    annotate_frame(
-                        frame,
-                        detections,
-                        current,
-                        fps,
-                        narration_only=narration_only,
-                    )
+            if preview is not None or args.frame_out is not None:
+                annotated = annotate_frame(
+                    frame,
+                    detections,
+                    current,
+                    fps,
+                    narration_only=narration_only,
                 )
-                if preview.closed:
-                    preview = None
+                if preview is not None:
+                    preview.show(annotated)
+                    if preview.closed:
+                        preview = None
+                if args.frame_out is not None:
+                    _write_frame_atomically(args.frame_out, annotated)
             if pump.error is not None:
                 raise RobotError("Command sender stopped: {}".format(pump.error))
 
@@ -1516,6 +1676,8 @@ def run(args) -> int:
             frame_source.close()
         if preview is not None:
             preview.close()
+        if recognizer is not None:
+            recognizer.close()
         if speaker is not None:
             speaker.close()
         if expanded_scene is not None:
@@ -1534,7 +1696,28 @@ def run(args) -> int:
     return 0
 
 
+def _make_process_dpi_aware() -> None:
+    """Report true pixel sizes so the RoboMaster app capture is not clipped.
+
+    Without this, on a scaled (high-DPI) display GetWindowRect/GetClientRect
+    return logical pixels while PrintWindow renders physical pixels, so only the
+    top-left fraction of the window is captured (about a quarter at 200%).
+    """
+    if os.name != "nt":
+        return
+    import ctypes
+
+    try:
+        ctypes.windll.shcore.SetProcessDpiAwareness(2)  # PER_MONITOR_AWARE
+    except Exception:
+        try:
+            ctypes.windll.user32.SetProcessDPIAware()
+        except Exception:
+            pass
+
+
 def main(argv: Sequence[str] = None) -> int:
+    _make_process_dpi_aware()
     args = build_parser().parse_args(argv)
     try:
         return run(args)

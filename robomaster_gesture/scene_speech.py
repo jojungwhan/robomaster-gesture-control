@@ -7,10 +7,32 @@ from dataclasses import dataclass
 import json
 from pathlib import Path
 import queue
+import re
 import subprocess
 import threading
 import time
 from typing import Optional, Sequence, Tuple
+
+
+# Deterministic phrases that ask the robot to describe what it currently sees.
+_LOOK_QUERY_PHRASES = (
+    "what do you see",
+    "what can you see",
+    "tell me what you see",
+    "what are you seeing",
+    "what you see",
+    "describe what you see",
+    "describe the scene",
+    "what is in front of you",
+    "what is around you",
+    "look around",
+)
+
+
+def is_look_query(text: str) -> bool:
+    """Return whether a phrase asks the robot to describe the current scene."""
+    joined = " ".join(re.findall(r"[a-z]+", str(text).casefold()))
+    return any(phrase in joined for phrase in _LOOK_QUERY_PHRASES)
 
 
 SCENE_LABEL_ALIASES = {

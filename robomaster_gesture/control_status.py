@@ -1,4 +1,4 @@
-"""Local status exchange between the gesture loop and hand overlay."""
+"""Local status exchange between controllers and the Control Center."""
 
 from __future__ import annotations
 

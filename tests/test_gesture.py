@@ -13,6 +13,7 @@ def make_hand(
     yaw=0.0,
     pinch=0.05,
     grab=0.05,
+    pinch_distance=55.0,
     visible=1.0,
 ):
     radians = math.radians(yaw)
@@ -34,7 +35,7 @@ def make_hand(
         normal_z=0.0,
         pinch_strength=pinch,
         grab_strength=grab,
-        pinch_distance_mm=40.0,
+        pinch_distance_mm=pinch_distance,
     )
 
 
@@ -83,12 +84,49 @@ class GestureControllerTests(unittest.TestCase):
         ready = controller.update(make_frame(0.40, make_hand()))
         self.assertEqual("READY", ready.state)
 
-        transitioning = controller.update(make_frame(0.45, make_hand(pinch=0.60)))
+        transitioning = controller.update(make_frame(0.45, make_hand(pinch=0.50)))
         self.assertEqual("READY", transitioning.state)
         self.assertTrue(transitioning.command.is_stopped())
 
-        arming = controller.update(make_frame(0.50, make_hand(pinch=0.95)))
+        arming = controller.update(make_frame(0.50, make_hand(pinch=0.65)))
         self.assertEqual("ARMING", arming.state)
+
+    def test_light_pinch_arms_without_requiring_low_grab_strength(self):
+        controller = GestureController()
+        controller.update(make_frame(0.0, make_hand()))
+        self.assertEqual(
+            "READY", controller.update(make_frame(0.30, make_hand())).state
+        )
+        controller.update(make_frame(0.35, make_hand(pinch=0.62, grab=0.80)))
+        controller.update(make_frame(0.45, make_hand(pinch=0.62, grab=0.80)))
+        engaged = controller.update(
+            make_frame(0.58, make_hand(pinch=0.62, grab=0.80))
+        )
+        self.assertEqual("DRIVING", engaged.state)
+
+    def test_close_thumb_index_distance_is_a_pinch_fallback(self):
+        controller = GestureController()
+        controller.update(make_frame(0.0, make_hand()))
+        controller.update(make_frame(0.30, make_hand()))
+        controller.update(
+            make_frame(0.35, make_hand(pinch=0.30, pinch_distance=25.0))
+        )
+        controller.update(
+            make_frame(0.45, make_hand(pinch=0.30, pinch_distance=25.0))
+        )
+        engaged = controller.update(
+            make_frame(0.58, make_hand(pinch=0.30, pinch_distance=25.0))
+        )
+        self.assertEqual("DRIVING", engaged.state)
+
+    def test_strength_dip_does_not_stop_while_thumb_and_index_remain_closed(self):
+        controller = GestureController()
+        arm(controller)
+        held = controller.update(
+            make_frame(1.05, make_hand(pinch=0.20, pinch_distance=20.0))
+        )
+        self.assertEqual("DRIVING", held.state)
+        self.assertIn("pinch held", held.reason)
 
     def test_forward_and_strafe_mapping(self):
         controller = GestureController(GestureConfig(smoothing_time_s=0.01))
