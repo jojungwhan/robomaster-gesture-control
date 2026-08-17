@@ -191,6 +191,16 @@ recognizer to the chosen one (any running listener stops so the next VOICE or
 the lowest latency; `small.en` and `large-v3-turbo` are more accurate but slower
 and, on a modest CPU, may lag live robot steering.
 
+On a PC with an NVIDIA GPU, add `-Gpu` to install the CUDA runtime libraries so
+transcription runs on the GPU (near-instant, and the larger models become usable
+live):
+
+    .\setup_whisper.ps1 -Model small.en -Gpu
+
+The recognizer auto-detects the GPU (device `auto`): it uses CUDA when the
+runtime is present and otherwise falls back to the CPU, so the same command works
+on any machine.
+
 Movement needs no wake word by default: say the direction (`forward`, `back`,
 `left`, `right`) and it drives; `stop`, `halt`, `freeze`, and `emergency stop`
 also work. Pass `--wake-word <word>` to require a spoken prefix (for example in a
@@ -238,6 +248,17 @@ turn phrase stops instead of synthesizing unsupported input.
 Install the optional pinned computer-vision runtime once:
 
     .\setup_yolo.ps1
+
+On a PC with an NVIDIA GPU, add `-Gpu` to replace the default CPU build of
+PyTorch with the matching CUDA wheels, so detection runs in real time:
+
+    .\setup_yolo.ps1 -Gpu                       # CUDA 12.4 wheels (default)
+    .\setup_yolo.ps1 -Gpu -CudaVersion cu121    # older drivers
+
+Detection auto-selects the device (`--device auto`): it uses the GPU when a
+CUDA-enabled PyTorch sees one, otherwise the CPU. Pass `--device cpu` (or a
+specific `0` / `cuda:0`) to force it. The Control Center's embedded object
+detection inherits this automatically.
 
 YOLO mode detects and tracks one named model class, draws boxes, track IDs,
 state, FPS, and the intended robot direction, and remains a dry run unless

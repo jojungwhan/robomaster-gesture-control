@@ -14,7 +14,8 @@ param(
     [string]$Model = 'yolo11n.pt',
     [double]$Confidence = 0.35,
     [int]$ImageSize = 416,
-    [string]$Device = 'cpu',
+    # auto = GPU when a CUDA torch sees one, else CPU. Force with cpu / 0 / cuda:0.
+    [string]$Device = 'auto',
     [int]$MinimumLockFrames = 3,
     [double]$CenterDeadzone = 0.12,
     [double]$StopHeight = 0.38,
