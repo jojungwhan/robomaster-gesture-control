@@ -13,12 +13,70 @@ from robomaster_gesture.yolo_follow import (
     TargetFollower,
     _validate_args,
     build_parser,
+    is_look_query,
     run,
 )
 
 
 def detection(label="bottle", box=(270, 140, 370, 300), confidence=0.9, track_id=4):
     return Detection(label, confidence, box, track_id)
+
+
+class LookQueryTests(unittest.TestCase):
+    def test_scene_questions_are_recognized(self):
+        for phrase in (
+            "tell me what you see",
+            "What do you see?",
+            "what can you see",
+            "describe the scene",
+            "look around please",
+            "what is around you",
+        ):
+            with self.subTest(phrase=phrase):
+                self.assertTrue(is_look_query(phrase))
+
+    def test_movement_and_unrelated_phrases_are_not_queries(self):
+        for phrase in ("forward", "stop", "robot go left", "", "turn right"):
+            with self.subTest(phrase=phrase):
+                self.assertFalse(is_look_query(phrase))
+
+    def test_voice_describe_flag_parses(self):
+        args = build_parser().parse_args(
+            ("--source", "webcam", "--voice-describe")
+        )
+        self.assertTrue(args.voice_describe)
+
+    def test_frame_out_argument_parses(self):
+        args = build_parser().parse_args(
+            ("--source", "webcam", "--frame-out", r"C:\out\frame.jpg")
+        )
+        self.assertEqual(Path(r"C:\out\frame.jpg"), args.frame_out)
+
+    def test_describe_request_file_argument_parses(self):
+        args = build_parser().parse_args(
+            ("--source", "robomaster-app", "--describe-request-file", r"C:\r.flag")
+        )
+        self.assertEqual(Path(r"C:\r.flag"), args.describe_request_file)
+        # No microphone listener needed in this mode.
+        self.assertFalse(args.voice_describe)
+
+    def test_frame_out_writes_a_jpeg_atomically(self):
+        try:
+            import cv2  # noqa: F401
+            import numpy as np
+        except ImportError:
+            self.skipTest("cv2/numpy not available in the test environment")
+        import tempfile
+        from robomaster_gesture.yolo_follow import _write_frame_atomically
+
+        frame = np.zeros((16, 24, 3), dtype=np.uint8)
+        with tempfile.TemporaryDirectory() as temporary:
+            out = Path(temporary) / "frame.jpg"
+            _write_frame_atomically(out, frame)
+            self.assertTrue(out.is_file())
+            self.assertGreater(out.stat().st_size, 50)
+            # The temp file is renamed away, never left behind.
+            self.assertFalse((Path(temporary) / "frame.jpg.tmp").exists())
 
 
 class TargetFollowerTests(unittest.TestCase):

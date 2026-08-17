@@ -36,3 +36,16 @@ The default `en_US-kristin-medium` US English female voice is downloaded from th
 repository and is not stored here. Its model card identifies its source as
 public-domain LibriVox recordings. Review the model card before redistribution:
 https://huggingface.co/rhasspy/piper-voices/blob/main/en/en_US/kristin/medium/MODEL_CARD.
+
+## Whisper speech recognition
+
+Optional free-form transcription launches the separately installed
+[`faster-whisper`](https://github.com/SYSTRAN/faster-whisper) package and its
+CTranslate2 runtime from a sibling virtual environment. Both are MIT licensed
+and are not stored in this repository.
+
+The setup script downloads a CTranslate2 conversion of OpenAI's MIT-licensed
+Whisper `base.en` model for responsive English control. It can optionally
+download OpenAI's MIT-licensed `large-v3-turbo` model for higher-accuracy offline
+transcription. Model weights are stored outside this repository under the
+sibling `models` directory.

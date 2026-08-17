@@ -23,6 +23,10 @@ try {
     }
 
     $recognizer = New-Object System.Speech.Recognition.SpeechRecognitionEngine($recognizerInfo)
+    $recognizedEventId = "RoboMasterSpeech.$PID.Recognized"
+    $completedEventId = "RoboMasterSpeech.$PID.Completed"
+    $audioLevelEventId = "RoboMasterSpeech.$PID.AudioLevel"
+    $recognitionStarted = $false
     try {
         $prefix = $WakeWord.Trim().ToLowerInvariant()
         $commands = @(
@@ -71,45 +75,75 @@ try {
             message = "$($recognizerInfo.Description); $sourceDescription"
         }
 
-        while ($true) {
-            try {
-                $result = $recognizer.Recognize(
-                    [TimeSpan]::FromSeconds($InitialSilenceSeconds)
-                )
-            } catch {
-                # PowerShell wraps exceptions raised by a .NET method call in
-                # MethodInvocationException.  After SpeechRecognitionEngine
-                # consumes a WAV file it detaches that input, so the next
-                # synchronous Recognize call reports "No audio input" through
-                # an inner InvalidOperationException.  Treat only that exact
-                # audio-file EOF condition as normal completion.  The exception
-                # message is localized by Windows, so its invariant .NET type
-                # and the known WAV-input mode are the reliable discriminator;
-                # microphone and other recognition failures still fail closed.
-                $exception = $_.Exception
-                while ($exception.InnerException) {
-                    $exception = $exception.InnerException
+        $null = Register-ObjectEvent -InputObject $recognizer `
+            -EventName SpeechRecognized -SourceIdentifier $recognizedEventId
+        $null = Register-ObjectEvent -InputObject $recognizer `
+            -EventName RecognizeCompleted -SourceIdentifier $completedEventId
+        $null = Register-ObjectEvent -InputObject $recognizer `
+            -EventName AudioLevelUpdated -SourceIdentifier $audioLevelEventId
+
+        # Async recognition lets this process publish the exact input stream's
+        # audio energy while it listens.  Event callbacks are deliberately not
+        # used because PowerShell runs callback output in a background job;
+        # instead, the main loop drains the event queue and owns stdout.
+        $recognizer.RecognizeAsync(
+            [System.Speech.Recognition.RecognizeMode]::Multiple
+        )
+        $recognitionStarted = $true
+        $recognitionCompleted = $false
+        while (-not $recognitionCompleted) {
+            Start-Sleep -Milliseconds 100
+            $peakAudioLevel = [int]$recognizer.AudioLevel
+            $pendingEvents = @(
+                Get-Event -ErrorAction SilentlyContinue |
+                    Where-Object {
+                        $_.SourceIdentifier -eq $recognizedEventId -or
+                        $_.SourceIdentifier -eq $completedEventId -or
+                        $_.SourceIdentifier -eq $audioLevelEventId
+                    } |
+                    Sort-Object EventIdentifier
+            )
+            foreach ($pendingEvent in $pendingEvents) {
+                try {
+                    if ($pendingEvent.SourceIdentifier -eq $recognizedEventId) {
+                        $result = $pendingEvent.SourceEventArgs.Result
+                        Write-SpeechEvent @{
+                            event = 'recognized'
+                            text = $result.Text
+                            confidence = [Math]::Round($result.Confidence, 6)
+                        }
+                    } elseif ($pendingEvent.SourceIdentifier -eq $audioLevelEventId) {
+                        $peakAudioLevel = [Math]::Max(
+                            $peakAudioLevel,
+                            [int]$pendingEvent.SourceEventArgs.AudioLevel
+                        )
+                    } else {
+                        $completionError = $pendingEvent.SourceEventArgs.Error
+                        if ($null -ne $completionError) {
+                            throw $completionError
+                        }
+                        $recognitionCompleted = $true
+                    }
+                } finally {
+                    Remove-Event -EventIdentifier $pendingEvent.EventIdentifier `
+                        -ErrorAction SilentlyContinue
                 }
-                $isAudioFileEof = $AudioFile -and
-                    $exception -is [System.InvalidOperationException] -and
-                    ([string]$recognizer.AudioState -eq 'Stopped')
-                if (-not $isAudioFileEof) {
-                    throw
-                }
-                $result = $null
             }
-            if ($null -ne $result) {
-                Write-SpeechEvent @{
-                    event = 'recognized'
-                    text = $result.Text
-                    confidence = [Math]::Round($result.Confidence, 6)
-                }
-            } elseif ($AudioFile) {
-                break
+            Write-SpeechEvent @{
+                event = 'audio-level'
+                level = [Math]::Max(0, [Math]::Min(100, $peakAudioLevel))
             }
         }
         Write-SpeechEvent @{ event = 'completed' }
     } finally {
+        if ($recognitionStarted) {
+            try { $recognizer.RecognizeAsyncCancel() } catch {}
+        }
+        foreach ($eventId in @($recognizedEventId, $completedEventId, $audioLevelEventId)) {
+            Unregister-Event -SourceIdentifier $eventId -ErrorAction SilentlyContinue
+            Get-Event -SourceIdentifier $eventId -ErrorAction SilentlyContinue |
+                Remove-Event -ErrorAction SilentlyContinue
+        }
         try { $recognizer.SetInputToNull() } catch {}
         $recognizer.Dispose()
     }

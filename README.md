@@ -6,8 +6,8 @@ This bridge turns one tracked hand into a fail-safe virtual joystick for a DJI R
 
 | Gesture or motion | Result |
 | --- | --- |
-| Hold one open hand for 0.35 seconds | Enter READY state; robot remains stopped |
-| Pinch and hold steadily for 0.35 seconds | Capture the current hand position and enter DRIVING |
+| Hold one open hand for 0.25 seconds | Enter READY state; robot remains stopped |
+| Lightly pinch thumb and index finger for 0.20 seconds | Capture the current hand position and enter DRIVING; no grip is required |
 | Move pinched hand away from you | Drive forward |
 | Move pinched hand toward you | Drive backward |
 | Move pinched hand left or right | Strafe left or right |
@@ -22,7 +22,7 @@ In stock-S1 app mode, DJI exposes only W/A/S/D chassis movement. Forward/back/st
 
 ## Why this gesture set
 
-- Pinch is exposed directly by LeapC as a continuous strength value, so hysteresis can make it a dependable dead-man control. Releasing it has an unambiguous meaning: stop.
+- Pinch strength and thumb-to-index distance are both exposed by LeapC. Either can engage the dead-man control, so a natural pinch works even if one signal is noisy. Overall grab strength is ignored during a pinch; only a nearly closed fist is treated as an emergency stop. Opening the pinch has an unambiguous meaning: stop.
 - Relative hand displacement behaves like a spring-centered joystick and provides proportional speed without depending on hand size or a fixed absolute sensor position.
 - Wrist yaw provides proportional turning while keeping the broad face of the hand visible to the camera. Rolling the hand edge-on is less trackable.
 - An open-hand hold is a deliberate readiness and re-centering step. A fist is reserved exclusively for emergency stop.
@@ -75,32 +75,92 @@ With the live-drive view open, use:
 
 Keep the RoboMaster live drive view in the foreground while driving. Changing focus immediately releases W/A/S/D and stops the gesture controller. This mode never sends Shift, mouse input, gimbal input, or blaster input.
 
-## Live hand overlay
+## RoboMaster Control Center
 
-Start the hand-skeleton visualizer before or during a control session:
+Start the Control Center before or during a control session:
 
-    .\run_leap_visualizer.ps1
+    .\run_control_center.ps1
 
 It draws both tracked hands, all finger bones, palm and arm joints, live
-pinch/grab meters, coordinates, tracking state, and frame rate. The overlay is
-always on top but uses the Windows `NOACTIVATE` and click-through styles, so it
-cannot take keyboard focus from RoboMaster or intercept mouse input. It uses a
-separate LeapC client and does not send robot commands.
+pinch/grab meters, coordinates, tracking state, and frame rate. It also provides
+one-place controls for `HAND CONTROL`, `VOICE CONTROL`, `STOP CONTROL`, and a
+15-second microphone dry test. Confirm the on-screen safety checkbox before a
+live input button is enabled. Selecting another input first stops the current
+controller and releases W/A/S/D; the machine-local controller lease remains an
+independent guard against concurrent live controllers.
+
+`VOICE CONTROL` is a low-latency, no-wake-word mode for the least delay between
+speech and movement: say just `forward`, `back`, `left`, `right` (or a diagonal
+like `forward left`), and `stop`. It uses a tight 0.20 s end-of-speech window
+and sends the command automatically. Because any recognized direction moves the
+robot, use it on a clear floor or with `DRY RUN`; the 40% confidence gate and
+the strict command-word filter (which rejects ordinary prose) still apply.
+
+The status/log line and the recognized-speech transcript are selectable read-only
+text: drag to highlight and press `Ctrl+C`, or right-click for `Copy`. The `COPY`
+button in the header copies a full diagnostics snapshot — tracking state, frame
+rate, the derived command, the last transcript, and the current status/error — to
+the clipboard in one click, which is convenient for pasting an error into a bug
+report or chat.
+
+`HAND CONTROL` and `VOICE CONTROL` drive a stock S1 through DJI's RoboMaster
+Windows app. If that app is not already open when you start one of these modes,
+the Control Center launches it for you through `launch_robomaster_standard.ps1`
+(the first launch may copy about 1.1 GB) and asks you to connect the S1 and open
+its live drive view, then press the button again. If the app is already open, it
+is used as-is and never relaunched.
+
+The Control Center is always on top and opens without taking keyboard focus from
+the RoboMaster live-drive view. A deliberate button click can briefly activate
+the Control Center; starting Leap or voice control then returns focus to the
+RoboMaster app before it can move. Any later focus loss remains a fail-safe stop.
+The Leap display uses a separate LeapC client and continues visualizing hands
+when robot control is off or voice mode is selected.
 
 The view labels the four translation axes directly: hand away from you is robot
 forward, hand toward you is robot back, and hand left/right is robot left/right.
 When the gesture controller is running, the line below the skeleton reports the
 derived command as `FORWARD`, `BACK`, `LEFT`, `RIGHT`, or a diagonal combination.
-It also distinguishes `DRY RUN` from live `ROBOT` output and changes to `STOP`
-immediately when the controller disarms.
+It also states whether that command reaches the robot: `SENDS TO S1` for a live
+controller versus `NOT SENT (DRY RUN)`, and changes to `STOP` immediately when
+the controller disarms.
 
-Stop the overlay with:
+Tick `DRY RUN (no S1)` to test Leap and Voice without a robot. Dry run computes
+and displays commands but never connects to the RoboMaster app, so it needs
+neither the safety checkbox nor an S1: use it to confirm gestures and speech are
+recognized and to read `NOT SENT (DRY RUN)` before driving for real. Untick it
+and confirm the safety checkbox to send `SENDS TO S1`.
 
-    .\run_leap_visualizer.ps1 -Stop
+Voice mode listens to this laptop's default microphone, not the RoboMaster
+camera or the Leap sensor. Say `forward`, `back`, `left`, or `right` (no wake
+word); `stop` works too. If the dry microphone test
+shows no input, choose `MIC BLOCKED?` in the Control Center. The segmented meter
+is active only during Voice or `TEST MIC`: it displays the speech recognizer's
+live input energy from 0 to 100, reports `NO SIGNAL` at zero, and warns when the
+input is unusually loud. It is an activity level, not the Windows microphone
+volume setting. Recognized phrases appear on the same panel as a local Whisper
+transcription with an approximate confidence score; the last phrase remains
+visible after the dry test finishes. Free-form English such as `there is a chair
+beside the table` is transcribed, but only explicit direction phrases (`forward`,
+`back`, `left`, `right`, a diagonal, or `stop`) move the chassis; ordinary prose
+is rejected by the command-word filter. The guided panel
+links to Samsung Settings, Windows microphone privacy, and Windows sound input.
+On this Samsung laptop, press `Fn+F10` until the toast says Block Recording is
+off. Then turn on Windows **Privacy & security > Microphone > Let desktop apps
+access your microphone** and retry the dry test. PowerShell may not appear as an
+individual app in that list because Windows applies one global permission to
+desktop apps. If the test remains silent, use **Sound > Input > Microphone Array
+> Start test** and check whether its meter moves.
+
+Stop the Control Center with its `CLOSE` button or:
+
+    .\run_control_center.ps1 -Stop
 
 For a timed diagnostic, use `-Duration`, for example:
 
-    .\run_leap_visualizer.ps1 -Duration 30
+    .\run_control_center.ps1 -Duration 30
+
+The previous `run_leap_visualizer.ps1` launcher remains as a compatible alias.
 
 The implementation is adapted from Ultraleap's Apache-2.0 licensed
 [`leapc-python-bindings` visualizer](https://github.com/ultraleap/leapc-python-bindings/blob/main/examples/visualiser.py).
@@ -108,27 +168,57 @@ See `THIRD_PARTY_NOTICES.md` for attribution.
 
 ## Offline voice control
 
-Voice commands use the installed Windows `System.Speech` recognizer, so live
-audio stays on this PC and no cloud API key is needed. Movement requires the
-wake word `robot` by default, while `stop`, `halt`, `freeze`, and `emergency
-stop` are accepted without it. Each accepted movement is a short pulse (0.60
-seconds by default) and then stops automatically.
+Install the free local transcription runtime once:
+
+    .\setup_whisper.ps1
+
+This creates an isolated Python 3.9+ environment, installs pinned
+`faster-whisper` and `sounddevice` packages, and downloads the compact official
+English Whisper model used by the Control Center. Microphone audio remains on
+this PC and no account, cloud service, or API key is needed.
+
+Additional models can be installed and the Control Center will offer them in a
+`MODEL` menu on its VOICE panel (fastest first):
+
+    .\setup_whisper.ps1 -Model tiny.en          # fastest, least accurate
+    .\setup_whisper.ps1                          # base.en - fast, balanced (default)
+    .\setup_whisper.ps1 -Model small.en          # more accurate, slower
+    .\setup_whisper.ps1 -Model large-v3-turbo    # most accurate, slowest
+
+The `MODEL` menu lists only models that are already downloaded and switches the
+recognizer to the chosen one (any running listener stops so the next VOICE or
+`TEST MIC` press loads it). `base.en` is the responsive default; `tiny.en` gives
+the lowest latency; `small.en` and `large-v3-turbo` are more accurate but slower
+and, on a modest CPU, may lag live robot steering.
+
+Movement needs no wake word by default: say the direction (`forward`, `back`,
+`left`, `right`) and it drives; `stop`, `halt`, `freeze`, and `emergency stop`
+also work. Pass `--wake-word <word>` to require a spoken prefix (for example in a
+noisy room). Each accepted movement is a short pulse (0.60 seconds by default)
+and then stops automatically.
 In live mode, microphone or WAV recognition starts only after the robot
 connection and independent stale-command watchdog are active, so speech cannot
-queue while the controller is still connecting.
+queue while the controller is still connecting. Non-stop transcriptions more
+than four seconds old are rejected rather than executed.
 
 Test the default PC microphone without contacting the robot:
 
     .\run_voice_control.ps1 -Duration 20
 
-Say `robot forward`, `robot back`, `robot left`, `robot right`, or a diagonal
-such as `robot forward left`. Test a recorded command from a PCM WAV file with:
+Say `forward`, `back`, `left`, `right`, or a diagonal such as `forward left`.
+Test a recorded command from a PCM WAV file with:
 
     .\run_voice_control.ps1 -AudioFile .\command.wav
 
-List the installed offline recognizers with:
+To diagnose the older constrained Windows recognizer, select it explicitly or
+list the installed Windows recognizers with:
 
+    .\run_voice_control.ps1 -SpeechEngine windows -Duration 20
     .\run_voice_control.ps1 -ListRecognizers
+
+Whisper cannot bypass a hardware or Windows privacy mute. If `TEST MIC` stays at
+`NO SIGNAL 0%`, unblock the laptop microphone first using the Control Center's
+`MIC BLOCKED?` guide; transcription begins once that meter receives real audio.
 
 When dry-run recognition is correct, connect the S1 in its foreground live-drive
 view and verify input access without starting the microphone or movement:
@@ -140,7 +230,7 @@ Then explicitly enable voice movement:
     .\run_voice_control.ps1 -Live -Transport s1-app
 
 For an EP/EP Core using the DJI SDK, use `-Transport sdk`. SDK voice mode also
-supports `robot turn left/right`; the stock S1 app exposes only W/A/S/D, so a
+supports `turn left/right`; the stock S1 app exposes only W/A/S/D, so a
 turn phrase stops instead of synthesizing unsupported input.
 
 ## YOLO object following

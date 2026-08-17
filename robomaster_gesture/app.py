@@ -8,6 +8,7 @@ import time
 from typing import Optional, Sequence
 
 from .control_lease import ControlLeaseError, ControllerLease
+from .control_center import stop_requested
 from .control_status import DEFAULT_CONTROL_STATUS_PATH, ControlStatusPublisher
 from .gesture import GestureConfig, GestureController
 from .leap_source import LeapSource, LeapSourceError
@@ -178,7 +179,12 @@ def build_parser() -> argparse.ArgumentParser:
         "--status-file",
         type=Path,
         default=DEFAULT_CONTROL_STATUS_PATH,
-        help="local command-status file used by the hand overlay",
+        help="local command-status file used by the Control Center",
+    )
+    parser.add_argument(
+        "--stop-file",
+        type=Path,
+        help="exit safely when this private Control Center request file appears",
     )
     return parser
 
@@ -317,8 +323,9 @@ def run(args: argparse.Namespace) -> int:
         )
 
         print(
-            "Controls: hold one open {} hand until READY, pinch for 0.35s, "
-            "then move it. Release, make a fist, or remove the hand to stop. "
+            "Controls: hold one open {} hand until READY, lightly pinch thumb "
+            "and index finger for 0.20s (no grip required), then move it. Open "
+            "the pinch, make a fist, or remove the hand to stop. "
             "Press Ctrl+C to exit.".format(args.hand),
             flush=True,
         )
@@ -332,6 +339,9 @@ def run(args: argparse.Namespace) -> int:
 
         while True:
             now_s = time.monotonic()
+            if stop_requested(args.stop_file):
+                print("Control Center requested STOP; stopping immediately.", flush=True)
+                break
             if args.duration is not None and now_s - start_s >= args.duration:
                 print("Duration reached; stopping.", flush=True)
                 break

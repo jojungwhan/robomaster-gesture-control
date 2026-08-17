@@ -3,11 +3,14 @@ param(
     [double]$Duration = 0,
     [int]$X = -1,
     [int]$Y = 72,
+    [int]$Width = 620,
+    [int]$Height = 680,
     [double]$Opacity = 0.90
 )
 
 $ErrorActionPreference = 'Stop'
 $statePath = Join-Path $PSScriptRoot 'logs\leap_visualizer_state.json'
+$shutdownPath = Join-Path $PSScriptRoot 'logs\control_center_shutdown.request'
 $pythonRoot = 'C:\Program Files\Python312'
 $pythonWindowed = Join-Path $pythonRoot 'pythonw.exe'
 
@@ -34,16 +37,23 @@ function Get-VisualizerProcess {
 $existing = Get-VisualizerProcess
 if ($Stop) {
     if ($existing) {
-        Stop-Process -Id $existing.Id
-        Write-Host "Stopped Leap hand overlay (PID $($existing.Id))."
+        Set-Content -LiteralPath $shutdownPath -Value 'stop' -Encoding ASCII
+        try {
+            Wait-Process -Id $existing.Id -Timeout 8 -ErrorAction Stop
+            Write-Host "Safely stopped RoboMaster Control Center (PID $($existing.Id))."
+        } catch {
+            Stop-Process -Id $existing.Id -Force -ErrorAction SilentlyContinue
+            throw 'Control Center did not complete its safe shutdown within 8 seconds and was forced closed.'
+        }
     } else {
-        Write-Host 'Leap hand overlay is not running.'
+        Write-Host 'RoboMaster Control Center is not running.'
     }
+    Remove-Item -LiteralPath $shutdownPath -Force -ErrorAction SilentlyContinue
     exit 0
 }
 
 if ($existing) {
-    Write-Host "Leap hand overlay is already running (PID $($existing.Id))."
+    Write-Host "RoboMaster Control Center is already running (PID $($existing.Id))."
     exit 0
 }
 if (-not (Test-Path -LiteralPath $pythonWindowed)) {
@@ -51,11 +61,15 @@ if (-not (Test-Path -LiteralPath $pythonWindowed)) {
 }
 
 New-Item -ItemType Directory -Path (Split-Path -Parent $statePath) -Force | Out-Null
+Remove-Item -LiteralPath $shutdownPath -Force -ErrorAction SilentlyContinue
 $arguments = @(
     '-m', 'robomaster_gesture.leap_visualizer',
     '--x', $X,
     '--y', $Y,
-    '--opacity', $Opacity
+    '--width', $Width,
+    '--height', $Height,
+    '--opacity', $Opacity,
+    '--shutdown-file', $shutdownPath
 )
 if ($Duration -gt 0) {
     $arguments += @('--duration', $Duration)
@@ -75,8 +89,8 @@ $process = Start-Process `
 
 Start-Sleep -Milliseconds 700
 if ($process.HasExited) {
-    throw 'Leap hand overlay exited during startup.'
+    throw 'RoboMaster Control Center exited during startup.'
 }
-Write-Host "Leap hand overlay started (PID $($process.Id))."
-Write-Host 'It is always-on-top, click-through, and cannot take RoboMaster keyboard focus.'
-Write-Host 'Stop it with: .\run_leap_visualizer.ps1 -Stop'
+Write-Host "RoboMaster Control Center started (PID $($process.Id))."
+Write-Host 'It opens without stealing focus; live mode returns focus to RoboMaster before movement.'
+Write-Host 'Stop it with: .\run_control_center.ps1 -Stop'
