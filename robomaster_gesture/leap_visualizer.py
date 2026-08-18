@@ -781,9 +781,44 @@ class ControlCenterWindow:
         )
         self.vision_check.pack(fill="x", pady=(3, 0))
 
+        # Always-visible readout of the command going to the S1. It lives in the
+        # panel (not the canvas, which the object-detection feed can cover) so the
+        # operator can always see what is being sent and whether it is live.
+        cmd_bar = tk.Frame(
+            panel,
+            bg="#08131C",
+            highlightthickness=1,
+            highlightbackground=self.GRID,
+        )
+        cmd_bar.pack(fill="x", padx=10, pady=(0, 4))
+        tk.Label(
+            cmd_bar,
+            text="COMMAND → S1",
+            fg=self.MUTED,
+            bg="#08131C",
+            font=("Segoe UI Semibold", 8),
+        ).pack(side="left", padx=(8, 6), pady=3)
+        self.command_badge_label = tk.Label(
+            cmd_bar,
+            text="CONTROL OFF",
+            fg=self.MUTED,
+            bg="#08131C",
+            font=("Segoe UI Semibold", 9),
+        )
+        self.command_badge_label.pack(side="right", padx=(6, 8))
+        self.command_motion_label = tk.Label(
+            cmd_bar,
+            text="—",
+            fg=self.MUTED,
+            bg="#08131C",
+            anchor="w",
+            font=("Consolas", 12, "bold"),
+        )
+        self.command_motion_label.pack(side="left", fill="x", expand=True)
+
         self.controller_status_text = self._make_readonly_text(
             panel,
-            height=3,
+            height=2,
             bg="#071018",
             fg=self.MUTED,
             font=("Consolas", 8),
@@ -1837,18 +1872,10 @@ class ControlCenterWindow:
             and 0.0 <= time.time() - control.updated_at_epoch_s <= 0.75
         )
         if control_fresh:
-            directions = translation_directions(control.command)
-            movement = " + ".join(directions) if directions else "STOP"
-            if control.live:
-                # A live controller drives the S1 via the app's W/A/S/D keys.
-                target = "SENDS TO S1"
-                control_color = self.WARN if directions else self.GOOD
-            else:
-                target = "NOT SENT (DRY RUN)"
-                control_color = self.RIGHT if directions else self.GOOD
-            control_text = "{}  [{}]  |  {}".format(
-                movement, control.state, target
+            motion, badge, control_color, _badge_color = self._command_readout(
+                control, True
             )
+            control_text = "{}  [{}]  |  {}".format(motion, control.state, badge)
         else:
             control_text = "OPEN HAND  >  LIGHT PINCH (NO GRIP)  |  CONTROL OFF"
             control_color = self.MUTED
@@ -1966,9 +1993,72 @@ class ControlCenterWindow:
         self._diag_transcript = state.label
         self._set_readonly_text(self.transcript_text, state.label, color)
 
+    _DIRECTION_ARROWS = {
+        "FORWARD": "↑",
+        "BACK": "↓",
+        "LEFT": "←",
+        "RIGHT": "→",
+        "CW": "↻",
+        "CCW": "↺",
+    }
+
+    def _command_readout(self, control, control_fresh: bool):
+        """Return (motion, badge, motion_color, badge_color) for the S1 command.
+
+        Shared by the always-visible panel indicator and the on-canvas line so
+        the two never disagree about what is being sent.
+        """
+        if not control_fresh or control is None:
+            return ("—  no command", "CONTROL OFF", self.MUTED, self.MUTED)
+        parts = list(translation_directions(control.command))
+        yaw = control.command.clockwise_deg_s
+        if yaw >= 5.0:
+            parts.append("CW")
+        elif yaw <= -5.0:
+            parts.append("CCW")
+        moving = bool(parts)
+        speed = max(
+            abs(control.command.forward_m_s), abs(control.command.right_m_s)
+        )
+        if moving:
+            labeled = "  ".join(
+                "{} {}".format(self._DIRECTION_ARROWS.get(part, ""), part).strip()
+                for part in parts
+            )
+            motion = (
+                "{}   {:.2f} m/s".format(labeled, speed)
+                if speed >= 0.015
+                else labeled
+            )
+        else:
+            motion = "■ STOP"
+        if control.live:
+            # Amber while the robot is actually moving, calm green when stopped.
+            color = self.WARN if moving else self.GOOD
+            return (motion, "● SENT TO S1", color, color)
+        motion_color = self.RIGHT if moving else self.MUTED
+        return (motion, "○ DRY RUN — NOT SENT", motion_color, self.RIGHT)
+
+    def _update_command_indicator(self, managed, control, control_fresh: bool) -> None:
+        active = (
+            control_fresh
+            and control is not None
+            and managed.mode in (LEAP_MODE, VOICE_MODE)
+            and managed.process_id is not None
+            and control.process_id == managed.process_id
+        )
+        motion, badge, motion_color, badge_color = self._command_readout(
+            control, bool(active)
+        )
+        self.command_motion_label.config(text=motion, fg=motion_color)
+        self.command_badge_label.config(text=badge, fg=badge_color)
+
     def _update_control_widgets(self, control, control_fresh: bool) -> None:
         self._consume_pending_app_result()
         self._consume_pending_ultraleap_result()
+        self._update_command_indicator(
+            self.controller_manager.latest(), control, control_fresh
+        )
         if self._vision_process is not None and self._vision_process.poll() is not None:
             # The object-detection window closed or exited on its own.
             self._stop_vision()
