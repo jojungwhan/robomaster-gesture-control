@@ -81,6 +81,21 @@ Start the Control Center before or during a control session:
 
     .\run_control_center.ps1
 
+### Open it from a web page
+
+For a browser button that opens the app, start the local launcher:
+
+    .\run_web_launcher.ps1
+
+It serves a small control page (default <http://127.0.0.1:8770>, opened
+automatically) with **Open Control Center** and **Stop** buttons and a live
+running/stopped indicator. A browser cannot start a desktop program by itself,
+so the page talks to this small local server, which runs the same
+`run_control_center.ps1`. The launcher binds to localhost only; pass
+`-BindHost 0.0.0.0` to reach it from another device on your LAN (for example a
+phone), and `-Port <n>` to change the port. Keep the launcher window open while
+you use the page; press `Ctrl+C` to stop it.
+
 It draws both tracked hands, all finger bones, palm and arm joints, live
 pinch/grab meters, coordinates, tracking state, and frame rate. It also provides
 one-place controls for `HAND CONTROL`, `VOICE CONTROL`, `STOP CONTROL`, and a
