@@ -1,13 +1,16 @@
 import unittest
 
 from robomaster_gesture.control_center import MIC_TEST_MODE, VOICE_MODE
+from robomaster_gesture.control_status import ControlStatusSnapshot
 from robomaster_gesture.leap_visualizer import (
+    ControlCenterWindow,
     Point3,
     build_diagnostics_text,
     microphone_meter_state,
     project_xz,
     transcription_display_state,
 )
+from robomaster_gesture.models import VelocityCommand
 
 
 class LeapVisualizerProjectionTests(unittest.TestCase):
@@ -134,6 +137,55 @@ class DiagnosticsTextTests(unittest.TestCase):
         self.assertIn("LEAP RUNNING  |  Controls: pinch to drive", block)
         # The status can be multi-line, so it is placed last under its heading.
         self.assertTrue(block.strip().endswith("Controls: pinch to drive"))
+
+
+class CommandReadoutTests(unittest.TestCase):
+    """The always-visible "COMMAND -> S1" readout, tested without a Tk window."""
+
+    def _readout(self, *, forward=0.0, right=0.0, yaw=0.0, live=True, fresh=True):
+        window = ControlCenterWindow.__new__(ControlCenterWindow)
+        control = ControlStatusSnapshot(
+            updated_at_epoch_s=0.0,
+            process_id=1,
+            live=live,
+            transport="s1-app",
+            state="DRIVING" if (forward or right or yaw) else "READY",
+            reason="",
+            command=VelocityCommand(
+                forward_m_s=forward, right_m_s=right, clockwise_deg_s=yaw
+            ),
+        )
+        return window._command_readout(control, fresh)
+
+    def test_no_fresh_control_reads_off(self):
+        motion, badge, motion_color, badge_color = self._readout(fresh=False)
+        self.assertIn("no command", motion)
+        self.assertEqual("CONTROL OFF", badge)
+        self.assertEqual(ControlCenterWindow.MUTED, motion_color)
+        self.assertEqual(ControlCenterWindow.MUTED, badge_color)
+
+    def test_live_movement_is_marked_sent_with_direction_and_speed(self):
+        motion, badge, motion_color, _ = self._readout(forward=0.25, live=True)
+        self.assertIn("FORWARD", motion)
+        self.assertIn("0.25 m/s", motion)
+        self.assertEqual("● SENT TO S1", badge)
+        # Amber while the robot is actually moving.
+        self.assertEqual(ControlCenterWindow.WARN, motion_color)
+
+    def test_live_stop_is_sent_but_calm_green(self):
+        motion, badge, motion_color, _ = self._readout(forward=0.0, live=True)
+        self.assertEqual("■ STOP", motion)
+        self.assertEqual("● SENT TO S1", badge)
+        self.assertEqual(ControlCenterWindow.GOOD, motion_color)
+
+    def test_dry_run_movement_is_marked_not_sent(self):
+        motion, badge, _motion_color, badge_color = self._readout(
+            forward=0.2, right=-0.2, live=False
+        )
+        self.assertIn("FORWARD", motion)
+        self.assertIn("LEFT", motion)
+        self.assertEqual("○ DRY RUN — NOT SENT", badge)
+        self.assertEqual(ControlCenterWindow.RIGHT, badge_color)
 
 
 if __name__ == "__main__":
