@@ -125,6 +125,12 @@ the Control Center launches it for you through `launch_robomaster_standard.ps1`
 its live drive view, then press the button again. If the app is already open, it
 is used as-is and never relaunched.
 
+Hand tracking needs Ultraleap's tracking software, so on startup the Control
+Center also opens the **Ultraleap Tracking Control Panel** for you (the same way
+it opens DJI's app), giving you a live view to confirm the sensor sees your hand.
+If the Control Panel is already open it is left as-is, and if the Ultraleap
+software is not installed the status line says so.
+
 The Control Center is always on top and opens without taking keyboard focus from
 the RoboMaster live-drive view. A deliberate button click can briefly activate
 the Control Center; starting Leap or voice control then returns focus to the
