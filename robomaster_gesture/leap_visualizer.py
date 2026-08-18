@@ -32,6 +32,7 @@ from .control_center import (
 from .control_status import DEFAULT_CONTROL_STATUS_PATH, ControlStatusReader
 from .models import translation_directions
 from .robomaster_app import RoboMasterAppLauncher
+from .ultraleap_app import UltraleapControlPanelLauncher
 from .whisper_models import default_choice, discover_whisper_models
 
 
@@ -456,6 +457,7 @@ class ControlCenterWindow:
         controller_manager: ControlCenterProcessManager,
         shutdown_file: Optional[Path] = None,
         app_launcher: Optional[RoboMasterAppLauncher] = None,
+        ultraleap_launcher: Optional[UltraleapControlPanelLauncher] = None,
     ):
         import tkinter as tk
 
@@ -468,6 +470,9 @@ class ControlCenterWindow:
         self.control_reader = control_reader
         self.controller_manager = controller_manager
         self.app_launcher = app_launcher or RoboMasterAppLauncher()
+        self.ultraleap_launcher = (
+            ultraleap_launcher or UltraleapControlPanelLauncher()
+        )
         self.shutdown_file = Path(shutdown_file) if shutdown_file is not None else None
         self.started_at_s = time.monotonic()
         self._closing = False
@@ -479,6 +484,7 @@ class ControlCenterWindow:
         self._app_status = None  # type: Optional[Tuple[str, str]]
         self._app_lock = threading.Lock()
         self._pending_app_result = None
+        self._pending_ultraleap_result = None
         self._vision_process = None
         self._vision_frame_path = PROJECT_ROOT / "logs" / "vision_frame.jpg"
         self._vision_frame_mtime = 0.0
@@ -520,6 +526,9 @@ class ControlCenterWindow:
         self.root.update_idletasks()
         self._show_without_initial_activation(x, y)
         self.root.after(0, self._render)
+        # Hand tracking needs the Ultraleap software, so open its Control Panel
+        # right away (like we auto-open DJI's app for the robot).
+        self.root.after(300, self._autostart_ultraleap)
         # Object detection is on by default; start it shortly after the window
         # is up so the panel is visible while the models load.
         self.root.after(1200, self._autostart_vision)
@@ -1205,6 +1214,31 @@ class ControlCenterWindow:
             self._pending_app_result = None
         if result is not None:
             self._on_app_launch_finished(result)
+
+    def _autostart_ultraleap(self) -> None:
+        """Open Ultraleap's Control Panel so the sensor is tracking on startup."""
+        def worker() -> None:
+            result = self.ultraleap_launcher.launch()
+            with self._app_lock:
+                self._pending_ultraleap_result = result
+
+        threading.Thread(
+            target=worker, name="UltraleapLaunch", daemon=True
+        ).start()
+
+    def _consume_pending_ultraleap_result(self) -> None:
+        with self._app_lock:
+            result = self._pending_ultraleap_result
+            self._pending_ultraleap_result = None
+        # Success (opened or already open) needs no status line - the Control
+        # Panel window is its own confirmation. Only a missing install or a
+        # launch failure is worth surfacing, and only while idle.
+        if (
+            result is not None
+            and not result.started
+            and not result.already_running
+        ):
+            self._app_status = ("LEAP  |  {}".format(result.message), self.WARN)
 
     def _on_app_launch_finished(self, result) -> None:
         self._app_launch_in_progress = False
@@ -1934,6 +1968,7 @@ class ControlCenterWindow:
 
     def _update_control_widgets(self, control, control_fresh: bool) -> None:
         self._consume_pending_app_result()
+        self._consume_pending_ultraleap_result()
         if self._vision_process is not None and self._vision_process.poll() is not None:
             # The object-detection window closed or exited on its own.
             self._stop_vision()
