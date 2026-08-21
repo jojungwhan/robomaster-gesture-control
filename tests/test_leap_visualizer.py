@@ -1,6 +1,8 @@
+import time
 import unittest
+from types import SimpleNamespace
 
-from robomaster_gesture.control_center import MIC_TEST_MODE, VOICE_MODE
+from robomaster_gesture.control_center import LEAP_MODE, MIC_TEST_MODE, VOICE_MODE
 from robomaster_gesture.control_status import ControlStatusSnapshot
 from robomaster_gesture.leap_visualizer import (
     ControlCenterWindow,
@@ -186,6 +188,103 @@ class CommandReadoutTests(unittest.TestCase):
         self.assertIn("LEFT", motion)
         self.assertEqual("○ DRY RUN — NOT SENT", badge)
         self.assertEqual(ControlCenterWindow.RIGHT, badge_color)
+
+
+class ControlOwnershipTests(unittest.TestCase):
+    """A venv launcher can relaunch the base interpreter, so the worker that
+    publishes may differ from the PID the Control Center tracked; either PID
+    must still count as the Control Center's own controller."""
+
+    def _snap(self, pid, ppid):
+        return ControlStatusSnapshot(
+            updated_at_epoch_s=0.0,
+            process_id=pid,
+            parent_process_id=ppid,
+            live=False,
+            transport="s1-app",
+            state="READY",
+            reason="",
+            command=VelocityCommand.stopped(),
+        )
+
+    def test_child_worker_matches_via_parent_pid(self):
+        managed = SimpleNamespace(process_id=100)  # tracked launcher PID
+        # Worker relaunched as pid 200 with parent 100.
+        self.assertTrue(
+            ControlCenterWindow._control_matches_managed(self._snap(200, 100), managed)
+        )
+
+    def test_direct_worker_matches_via_own_pid(self):
+        managed = SimpleNamespace(process_id=200)
+        self.assertTrue(
+            ControlCenterWindow._control_matches_managed(self._snap(200, 100), managed)
+        )
+
+    def test_unrelated_controller_does_not_match(self):
+        managed = SimpleNamespace(process_id=100)
+        self.assertFalse(
+            ControlCenterWindow._control_matches_managed(self._snap(300, 400), managed)
+        )
+
+    def test_no_managed_controller_never_matches(self):
+        managed = SimpleNamespace(process_id=None)
+        self.assertFalse(
+            ControlCenterWindow._control_matches_managed(self._snap(200, 100), managed)
+        )
+
+
+class AutoHandStartTests(unittest.TestCase):
+    """Hand control auto-starts (dry run) on a steady hand, without Tk."""
+
+    def _window(self, *, mode=None, phase="OFF"):
+        window = ControlCenterWindow.__new__(ControlCenterWindow)
+        window._auto_hand_enabled = True
+        window._closing = False
+        window._auto_hand_allowed = True
+        window._hand_present_since = None
+        window._external_controller_active = False
+        window._app_launch_in_progress = False
+        window._app_status = ("stale", "x")
+        self.calls = []
+        managed = SimpleNamespace(mode=mode, phase=phase, process_id=None)
+        window.controller_manager = SimpleNamespace(
+            latest=lambda: managed,
+            switch_async=lambda mode, live: self.calls.append((mode, live)),
+        )
+        return window
+
+    def test_no_hand_rearms_and_does_not_start(self):
+        window = self._window()
+        window._auto_hand_allowed = False
+        window._maybe_autostart_hand(False)
+        self.assertTrue(window._auto_hand_allowed)
+        self.assertEqual([], self.calls)
+
+    def test_brief_hand_is_debounced(self):
+        window = self._window()
+        window._maybe_autostart_hand(True)  # first sighting only starts the timer
+        self.assertEqual([], self.calls)
+
+    def test_steady_hand_starts_dry_run_leap(self):
+        window = self._window()
+        window._hand_present_since = time.monotonic() - 1.0
+        window._maybe_autostart_hand(True)
+        self.assertEqual([(LEAP_MODE, False)], self.calls)
+        # Consumed so it does not retrigger every frame.
+        self.assertFalse(window._auto_hand_allowed)
+
+    def test_running_controller_is_not_disturbed(self):
+        window = self._window(mode=LEAP_MODE, phase="RUNNING")
+        window._hand_present_since = time.monotonic() - 1.0
+        window._maybe_autostart_hand(True)
+        self.assertEqual([], self.calls)
+
+    def test_disabled_auto_never_starts(self):
+        window = self._window()
+        window._auto_hand_enabled = False
+        window._hand_present_since = time.monotonic() - 1.0
+        window._maybe_autostart_hand(True)
+        self.assertEqual([], self.calls)
 
 
 if __name__ == "__main__":

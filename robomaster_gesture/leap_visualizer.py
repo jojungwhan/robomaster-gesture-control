@@ -485,6 +485,12 @@ class ControlCenterWindow:
         self._app_lock = threading.Lock()
         self._pending_app_result = None
         self._pending_ultraleap_result = None
+        # Hand control starts on its own (in dry run) once the Leap sees a hand,
+        # so no button press is needed just to watch the commands. Live driving
+        # still requires the safety arm via HAND CONTROL.
+        self._auto_hand_enabled = True
+        self._auto_hand_allowed = True
+        self._hand_present_since = None  # type: Optional[float]
         self._vision_process = None
         self._vision_frame_path = PROJECT_ROOT / "logs" / "vision_frame.jpg"
         self._vision_frame_mtime = 0.0
@@ -1508,7 +1514,43 @@ class ControlCenterWindow:
 
     def _stop_controller(self) -> None:
         self.safety_var.set(False)
+        # A deliberate stop stays stopped: do not auto-restart hand control until
+        # the operator removes the hand and presents it again.
+        self._auto_hand_allowed = False
         self.controller_manager.stop_async()
+
+    def _maybe_autostart_hand(self, hand_present: bool) -> None:
+        """Start dry-run hand control on its own once a hand is steadily seen.
+
+        This means no button press is needed just to see the gesture commands.
+        Auto-start is always dry run (never sends to the S1); live driving still
+        requires HAND CONTROL with the safety box.
+        """
+        if not self._auto_hand_enabled or self._closing:
+            return
+        if not hand_present:
+            # Re-arm once the hand leaves, so a manual STOP holds until a hand is
+            # presented again, and a brief drop-out does not re-trigger.
+            self._hand_present_since = None
+            self._auto_hand_allowed = True
+            return
+        now = time.monotonic()
+        if self._hand_present_since is None:
+            self._hand_present_since = now
+        if not self._auto_hand_allowed or now - self._hand_present_since < 0.5:
+            return
+        managed = self.controller_manager.latest()
+        if (
+            managed.mode is None
+            and managed.phase == "OFF"
+            and not self._external_controller_active
+            and not self._app_launch_in_progress
+        ):
+            # Consume the arm so it does not retrigger every frame; it re-arms
+            # when the hand leaves (above).
+            self._auto_hand_allowed = False
+            self._app_status = None
+            self.controller_manager.switch_async(LEAP_MODE, live=False)
 
     def _show_without_initial_activation(self, x: int, y: int) -> None:
         if os.name != "nt":
@@ -1718,6 +1760,14 @@ class ControlCenterWindow:
 
         snapshot = self.reader.latest()
         stale = time.monotonic() - snapshot.updated_at_s > 0.5
+        # Read the controller command once per frame so every render path -
+        # including the object-detection view - can show what is going to the S1.
+        control = self.control_reader.latest()
+        control_fresh = (
+            control is not None
+            and 0.0 <= time.time() - control.updated_at_epoch_s <= 0.75
+        )
+        self._maybe_autostart_hand(bool(snapshot.hands) and not stale)
         self.canvas.delete("all")
         self.canvas.create_rectangle(
             1,
@@ -1747,7 +1797,7 @@ class ControlCenterWindow:
                 self.width - 14, 17, text="say 'tell me what you see'",
                 fill=self.MUTED, font=("Consolas", 9), anchor="e",
             )
-            self._update_control_widgets(None, False)
+            self._update_control_widgets(control, control_fresh)
             self.root.after(33, self._render)
             return
         if self._vision_is_running():
@@ -1761,7 +1811,7 @@ class ControlCenterWindow:
                 16, 17, text="OBJECT DETECTION", fill=self.GOOD,
                 font=("Segoe UI Semibold", 12), anchor="w",
             )
-            self._update_control_widgets(None, False)
+            self._update_control_widgets(control, control_fresh)
             self.root.after(33, self._render)
             return
 
@@ -1866,11 +1916,6 @@ class ControlCenterWindow:
                 font=("Segoe UI Semibold", 12),
             )
 
-        control = self.control_reader.latest()
-        control_fresh = (
-            control is not None
-            and 0.0 <= time.time() - control.updated_at_epoch_s <= 0.75
-        )
         if control_fresh:
             motion, badge, control_color, _badge_color = self._command_readout(
                 control, True
@@ -2039,13 +2084,26 @@ class ControlCenterWindow:
         motion_color = self.RIGHT if moving else self.MUTED
         return (motion, "○ DRY RUN — NOT SENT", motion_color, self.RIGHT)
 
+    @staticmethod
+    def _control_matches_managed(control, managed) -> bool:
+        """Whether a control snapshot is from the Control Center's own controller.
+
+        The .venv-robomaster launcher (Python 3.8) can relaunch the base
+        interpreter, so the Control Center may hold the launcher PID while its
+        child worker publishes. Either PID counts as a match.
+        """
+        return (
+            control is not None
+            and managed.process_id is not None
+            and managed.process_id
+            in (control.process_id, control.parent_process_id)
+        )
+
     def _update_command_indicator(self, managed, control, control_fresh: bool) -> None:
         active = (
             control_fresh
-            and control is not None
             and managed.mode in (LEAP_MODE, VOICE_MODE)
-            and managed.process_id is not None
-            and control.process_id == managed.process_id
+            and self._control_matches_managed(control, managed)
         )
         motion, badge, motion_color, badge_color = self._command_readout(
             control, bool(active)
@@ -2069,7 +2127,7 @@ class ControlCenterWindow:
         self._external_controller_active = bool(
             control_fresh
             and control.live
-            and control.process_id != managed.process_id
+            and not self._control_matches_managed(control, managed)
             and "controller stopped" not in control.reason.casefold()
         )
 
@@ -2159,8 +2217,9 @@ class ControlCenterWindow:
                 )
             else:
                 status_text = (
-                    "DISARMED  |  Leap visualization is active; robot control is off.\n"
-                    "Check the safety box, or tick DRY RUN to test without the S1."
+                    "READY  |  Hand control starts automatically (dry run) when the "
+                    "Leap sees a hand - watch COMMAND → S1 above.\n"
+                    "Check the safety box, then HAND CONTROL, to drive a real S1."
                 )
             color = self.MUTED
         else:
