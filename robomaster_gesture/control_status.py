@@ -26,6 +26,10 @@ class ControlStatusSnapshot:
     state: str
     reason: str
     command: VelocityCommand
+    # The launcher PID (os.getppid). A Python 3.8 venv on Windows can relaunch
+    # the base interpreter, so the Control Center may track the launcher while
+    # this worker publishes; matching either PID keeps the two associated.
+    parent_process_id: int = 0
 
 
 class ControlStatusPublisher:
@@ -65,6 +69,7 @@ class ControlStatusPublisher:
             "schema": 1,
             "updated_at_epoch_s": time.time(),
             "process_id": os.getpid(),
+            "parent_process_id": os.getppid(),
             "live": self.live,
             "transport": self.transport,
             "state": decision.state,
@@ -125,6 +130,10 @@ class ControlStatusReader:
                     forward_m_s=float(command_data["forward_m_s"]),
                     right_m_s=float(command_data["right_m_s"]),
                     clockwise_deg_s=float(command_data["clockwise_deg_s"]),
+                ),
+                # Older writers omit this; fall back to the worker PID.
+                parent_process_id=int(
+                    data.get("parent_process_id", data["process_id"])
                 ),
             )
         except (FileNotFoundError, KeyError, TypeError, ValueError, OSError, json.JSONDecodeError):
